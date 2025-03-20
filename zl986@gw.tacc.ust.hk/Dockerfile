@@ -1,4 +1,4 @@
-FROM tensorflow/tensorflow:2.3.4
+FROM tensorflow/tensorflow:2.3.4-gpu
 WORKDIR /app
 COPY . .
 RUN pip3 install -r requirements.txt
