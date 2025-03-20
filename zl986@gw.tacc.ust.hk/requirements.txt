@@ -1,6 +1,1 @@
-numpy
-pandas
-scikit-learn
-matplotlib
-torch
-math
+bert4keras
