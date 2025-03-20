@@ -22,6 +22,8 @@ from bert4keras.snippets import text_segmentate
 import jieba
 jieba.initialize()
 
+from datasets import load_dataset
+
 # 基本参数
 maxlen = 512
 batch_size = 64
@@ -36,13 +38,19 @@ dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 def corpus():
     """语料生成器
     """
-    while True:
-        f = '/root/data_pretrain/data_shuf.json'
-        with open(f) as f:
-            for l in f:
-                l = json.loads(l)
-                for text in text_process(l['text']):
-                    yield text
+    ds = load_dataset("SamuelYang/bookcorpus")
+    i = 0
+    for l in ds["train"]:
+        for text in text_process(l['text']):
+            yield text
+
+    # while True:
+    #     f = '/root/data_pretrain/data_shuf.json'
+    #     with open(f) as f:
+    #         for l in f:
+    #             l = json.loads(l)
+    #             for text in text_process(l['text']):
+    #                 yield text
 
 
 def text_process(text):
