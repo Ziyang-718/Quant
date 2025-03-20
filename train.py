@@ -28,9 +28,9 @@ batch_size = 64
 epochs = 100000
 
 # bert配置
-config_path = '/root/kg/bert/chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '/root/kg/bert/chinese_wobert_plus_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '/root/kg/bert/chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
+config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
+checkpoint_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_model.ckpt'
+dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 
 
 def corpus():
