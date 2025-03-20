@@ -22,7 +22,7 @@ from bert4keras.snippets import text_segmentate
 import jieba
 jieba.initialize()
 
-from datasets import load_dataset
+from datasets import Dataset
 
 # 基本参数
 maxlen = 512
@@ -38,9 +38,9 @@ dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 def corpus():
     """语料生成器
     """
-    ds = load_dataset("SamuelYang/bookcorpus")
-    i = 0
-    for l in ds["train"]:
+    file_path = "kaggle_dataset/train/dataset.arrow"
+    ds = Dataset.from_file(file_path)
+    for l in ds:
         for text in text_process(l['text']):
             yield text
 
