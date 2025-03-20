@@ -1,4 +1,4 @@
-FROM python:3.8-slim-buster
+FROM tensorflow/tensorflow:2.3.4
 WORKDIR /app
 COPY . .
 RUN pip3 install -r requirements.txt

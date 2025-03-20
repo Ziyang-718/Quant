@@ -1,1 +1,2 @@
-bert4keras
+bert4keras==0.10.4
+jieba
