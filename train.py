@@ -23,6 +23,10 @@ import jieba
 jieba.initialize()
 
 from datasets import Dataset
+os.environ["NCCL_DEBUG"] = "WARN"
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 # 基本参数
 maxlen = 512
