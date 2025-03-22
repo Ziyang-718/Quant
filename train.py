@@ -23,7 +23,13 @@ import jieba
 jieba.initialize()
 
 from datasets import Dataset
-
+os.environ["NCCL_DEBUG"] = "WARN"
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+gpus = tf.config.list_physical_devices('GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
 # 基本参数
 maxlen = 512
 batch_size = 64
