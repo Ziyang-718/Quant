@@ -12,7 +12,7 @@ from bert4keras.backend import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer
-from bert4keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam
 from bert4keras.optimizers import extend_with_weight_decay
 from bert4keras.optimizers import extend_with_piecewise_linear_lr
 from bert4keras.optimizers import extend_with_gradient_accumulation
@@ -23,15 +23,11 @@ import jieba
 jieba.initialize()
 
 from datasets import Dataset
-os.environ["NCCL_DEBUG"] = "WARN"
-os.environ["NCCL_P2P_DISABLE"] = "1"
-os.environ["NCCL_IB_DISABLE"] = "1"
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 # 基本参数
 maxlen = 512
-batch_size = 32
-epochs = 10000
+batch_size = 64
+epochs = 100000
 
 # bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
