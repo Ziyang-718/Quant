@@ -12,7 +12,7 @@ from bert4keras.backend import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer
-from bert4keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam
 from bert4keras.optimizers import extend_with_weight_decay
 from bert4keras.optimizers import extend_with_piecewise_linear_lr
 from bert4keras.optimizers import extend_with_gradient_accumulation
@@ -30,38 +30,34 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 gpus = tf.config.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
+# Optional: Set GPU memory growth
+physical_gpus = tf.config.list_physical_devices('GPU')
+for gpu in physical_gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+
+
+
+# Use MultiWorker strategy
+strategy = tf.distribute.MultiWorkerMirroredStrategy()
+
 # 基本参数
 maxlen = 512
-batch_size = 32
-epochs = 10000
+batch_size = 64
+epochs = 100000
 
 # bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
 checkpoint_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_model.ckpt'
 dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 
-
 def corpus():
-    """语料生成器
-    """
     file_path = "kaggle_dataset/train/dataset.arrow"
     ds = Dataset.from_file(file_path)
     for l in ds:
         for text in text_process(l['text']):
             yield text
 
-    # while True:
-    #     f = '/root/data_pretrain/data_shuf.json'
-    #     with open(f) as f:
-    #         for l in f:
-    #             l = json.loads(l)
-    #             for text in text_process(l['text']):
-    #                 yield text
-
-
 def text_process(text):
-    """分割文本
-    """
     texts = text_segmentate(text, 32, u'\n。')
     result, length = '', 0
     for text in texts:
@@ -78,10 +74,7 @@ tokenizer = Tokenizer(
     pre_tokenize=lambda s: jieba.cut(s, HMM=False)
 )
 
-
 def random_masking(token_ids):
-    """对输入进行随机mask
-    """
     rands = np.random.random(len(token_ids))
     source, target = [], []
     for r, t in zip(rands, token_ids):
@@ -99,37 +92,25 @@ def random_masking(token_ids):
             target.append(0)
     return source, target
 
-
 class data_generator(DataGenerator):
-    """数据生成器
-    """
     def __iter__(self, random=False):
         for is_end, text in self.sample(random):
             token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
             source, target = random_masking(token_ids)
             yield source, segment_ids, target
 
-
 class CrossEntropy(Loss):
-    """交叉熵作为loss，并mask掉输入部分
-    """
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred = inputs
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
         accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
         accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
         self.add_metric(accuracy, name='accuracy', aggregation='mean')
-        loss = K.sparse_categorical_crossentropy(
-            y_true, y_pred, from_logits=True
-        )
+        loss = K.sparse_categorical_crossentropy(y_true, y_pred, from_logits=True)
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         return loss
 
-
-strategy = tf.distribute.MirroredStrategy()
-
 with strategy.scope():
-
     bert = build_transformer_model(
         config_path,
         checkpoint_path=None,
@@ -140,10 +121,8 @@ with strategy.scope():
     )
     model = bert.model
 
-    # 训练用模型
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
     outputs = CrossEntropy(1)([y_in, model.output])
-
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
     AdamW = extend_with_weight_decay(Adam, name='AdamW')
@@ -160,17 +139,12 @@ with strategy.scope():
     train_model.summary()
     bert.load_weights_from_checkpoint(checkpoint_path)
 
-
 class Evaluator(keras.callbacks.Callback):
-    """训练回调
-    """
     def on_epoch_end(self, epoch, logs=None):
-        model.save_weights('bert_model.weights')  # 保存模型
-
+        model.save_weights('bert_model.weights')
 
 if __name__ == '__main__':
-
-    # 启动训练
+    print("GPUs available:", tf.config.list_physical_devices('GPU'))
     evaluator = Evaluator()
     train_generator = data_generator(corpus(), batch_size, 10**5)
     dataset = train_generator.to_dataset(
@@ -183,7 +157,5 @@ if __name__ == '__main__':
     train_model.fit(
         dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
     )
-
 else:
-
     model.load_weights('bert_model.weights')
