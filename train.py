@@ -32,7 +32,7 @@ for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 # 基本参数
 maxlen = 512
-batch_size = 64
+batch_size = 128
 epochs = 10000
 
 # bert配置
