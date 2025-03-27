@@ -20,6 +20,7 @@ from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
 import jieba
+import matplotlib.pyplot as plt
 jieba.initialize()
 
 from datasets import Dataset
@@ -43,7 +44,7 @@ strategy = tf.distribute.MultiWorkerMirroredStrategy()
 # 基本参数
 maxlen = 512
 batch_size = 128
-epochs = 100000
+epochs = 100
 
 # bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
@@ -159,3 +160,31 @@ if __name__ == '__main__':
     )
 else:
     model.load_weights('bert_model.weights')
+
+
+history = train_model.fit(
+    dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
+)
+
+# Plot training accuracy and loss
+plt.figure(figsize=(12, 5))
+
+# Accuracy
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Training Accuracy')
+plt.title('Training Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+
+# Loss
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Training Loss', color='orange')
+plt.title('Training Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+
+plt.tight_layout()
+plt.savefig('Training_Accuracy_and_Loss_Curve')
+plt.show()
