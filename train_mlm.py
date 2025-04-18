@@ -1,24 +1,25 @@
 #! -*- coding: utf-8 -*-
 # RoFormerV2 预训练，MLM任务
 
+import glob
+import json
+from LAC import LAC
+from bert4keras.snippets import DataGenerator, parallel_apply_generator
+from bert4keras.optimizers import extend_with_gradient_accumulation
+from bert4keras.optimizers import extend_with_piecewise_linear_lr
+from bert4keras.optimizers import extend_with_layer_adaptation
+from bert4keras.optimizers import extend_with_weight_decay
+from bert4keras.optimizers import Adam
+from bert4keras.tokenizers import Tokenizer
+from bert4keras.models import build_transformer_model
+from bert4keras.layers import Loss
+from bert4keras.backend import keras, K
+import tensorflow as tf
+import numpy as np
 import os
 
 os.environ['TF_KERAS'] = '1'  # 必须使用tf.keras
 
-import json, glob
-import numpy as np
-import tensorflow as tf
-from bert4keras.backend import keras, K
-from bert4keras.layers import Loss
-from bert4keras.models import build_transformer_model
-from bert4keras.tokenizers import Tokenizer
-from bert4keras.optimizers import Adam
-from bert4keras.optimizers import extend_with_weight_decay
-from bert4keras.optimizers import extend_with_layer_adaptation
-from bert4keras.optimizers import extend_with_piecewise_linear_lr
-from bert4keras.optimizers import extend_with_gradient_accumulation
-from bert4keras.snippets import DataGenerator, parallel_apply_generator
-from LAC import LAC
 
 # 分词工具
 lac = LAC(mode='seg')
@@ -80,6 +81,7 @@ def mlm_encode(text):
 class data_generator(DataGenerator):
     """数据生成器
     """
+
     def __iter__(self, random=False):
         def encode(is_end_text):
             is_end, text = is_end_text
@@ -99,6 +101,7 @@ class data_generator(DataGenerator):
 class CrossEntropy(Loss):
     """交叉熵作为loss，并mask掉输入部分
     """
+
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred = inputs
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
@@ -157,6 +160,7 @@ with strategy.scope():
 class Evaluator(keras.callbacks.Callback):
     """训练回调
     """
+
     def on_epoch_end(self, epoch, logs=None):
         model.save_weights('roformer.v2.weights', save_format='h5')
         if (epoch + 1) % 100 == 0:
