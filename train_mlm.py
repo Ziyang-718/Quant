@@ -30,16 +30,16 @@ batch_size = 64
 epochs = 100000
 
 # 模型配置
-config_path = '/root/kg/bert/chinese_roformer-v2-char_L-24_H-1024_A-16/bert_config.json'
-checkpoint_path = '/root/kg/bert/chinese_roformer-v2-char_L-24_H-1024_A-16/bert_model.ckpt'
-dict_path = '/root/kg/bert/chinese_roformer-v2-char_L-24_H-1024_A-16/vocab.txt'
+config_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/bert_config.json'
+checkpoint_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/bert_model.ckpt'
+dict_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/vocab.txt'
 
 
 def corpus():
     """语料生成器
     """
     while True:
-        p = '/root/data_pretrain/wudao/WuDaoCorpus_me_shuf/*.json'
+        p = 'data/test.json'
         for f in sorted(glob.glob(p)):
             with open(f, errors='ignore') as f:
                 for l in f:
