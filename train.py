@@ -122,7 +122,7 @@ with strategy.scope():
     bert = build_transformer_model(
         config_path,
         checkpoint_path=None,
-        model='roformer',
+        model='roformer_v2',
         with_mlm='linear',
         ignore_invalid_weights=True,
         return_keras_model=False
