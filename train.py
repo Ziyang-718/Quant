@@ -4,7 +4,7 @@
 
 import os
 os.environ['TF_KERAS'] = '1'  # 必须使用tf.keras
-
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import json
 import numpy as np
 import tensorflow as tf
@@ -28,6 +28,7 @@ os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 gpus = tf.config.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
@@ -44,7 +45,7 @@ strategy = tf.distribute.MultiWorkerMirroredStrategy()
 # 基本参数
 maxlen = 512
 batch_size = 64
-epochs = 3
+epochs = 2
 
 # bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
