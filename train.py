@@ -181,7 +181,8 @@ if __name__ == '__main__':
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig('Training_Accuracy_and_Loss_Curve.png')
+    #plt.savefig('Training_Accuracy_and_Loss_Curve.png')
+    plt.savefig('/workspace/Quant/Training_Accuracy_and_Loss_Curve.png')
     plt.show()
     print("Saving to:", os.getcwd())
     # Add after training
