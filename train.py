@@ -21,6 +21,8 @@ from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
 import jieba
 import matplotlib.pyplot as plt
+import pandas as pd
+
 jieba.initialize()
 
 from datasets import Dataset
@@ -46,7 +48,7 @@ strategy = tf.distribute.MultiWorkerMirroredStrategy()
 # 基本参数
 maxlen = 512
 batch_size = 64
-epochs = 2
+epochs = 100
 
 # bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
@@ -189,6 +191,9 @@ if __name__ == '__main__':
     print("History keys:", history.history.keys())
     print("Accuracy values:", history.history.get('accuracy', []))
     print("Loss values:", history.history.get('loss', []))
+    metrics_df = pd.DataFrame(history.history)
+    # Save to CSV file inside your host-mounted folder
+    metrics_df.to_csv('/workspace/Quant/training_metrics.csv', index=False)
 
 else:
     model.load_weights('bert_model.weights')
