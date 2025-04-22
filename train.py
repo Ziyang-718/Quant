@@ -184,6 +184,10 @@ if __name__ == '__main__':
     plt.savefig('Training_Accuracy_and_Loss_Curve.png')
     plt.show()
     print("Saving to:", os.getcwd())
+    # Add after training
+    print("History keys:", history.history.keys())
+    print("Accuracy values:", history.history.get('accuracy', []))
+    print("Loss values:", history.history.get('loss', []))
 
 else:
     model.load_weights('bert_model.weights')
