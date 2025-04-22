@@ -156,36 +156,32 @@ if __name__ == '__main__':
         padded_batch=True
     )
 
-    train_model.fit(
+    history = train_model.fit(
         dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
     )
+
+    # Plot training accuracy and loss
+    plt.figure(figsize=(12, 5))
+
+    # Accuracy
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.title('Training Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # Loss
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Training Loss', color='orange')
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig('Training_Accuracy_and_Loss_Curve')
+    plt.show()
+
 else:
     model.load_weights('bert_model.weights')
-
-
-history = train_model.fit(
-    dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
-)
-
-# Plot training accuracy and loss
-plt.figure(figsize=(12, 5))
-
-# Accuracy
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Training Accuracy')
-plt.title('Training Accuracy')
-plt.xlabel('Epoch')
-plt.ylabel('Accuracy')
-plt.legend()
-
-# Loss
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Training Loss', color='orange')
-plt.title('Training Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
-
-plt.tight_layout()
-plt.savefig('Training_Accuracy_and_Loss_Curve')
-plt.show()
