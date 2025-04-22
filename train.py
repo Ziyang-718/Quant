@@ -29,6 +29,7 @@ os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+print("Saving to:", os.getcwd())
 gpus = tf.config.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
@@ -180,8 +181,9 @@ if __name__ == '__main__':
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig('Training_Accuracy_and_Loss_Curve')
+    plt.savefig('Training_Accuracy_and_Loss_Curve.png')
     plt.show()
+    print("Saving to:", os.getcwd())
 
 else:
     model.load_weights('bert_model.weights')
