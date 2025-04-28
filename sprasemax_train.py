@@ -29,7 +29,7 @@ os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-os.environ["SM_FRAMEWORK"] = "tf.keras"
+
 
 print("Saving to:", os.getcwd())
 
