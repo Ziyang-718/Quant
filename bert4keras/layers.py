@@ -95,14 +95,14 @@ else:
             self.supports_masking = True  # 本项目的自定义层均可mask
 
 
-if (not is_tf_keras) or tf.__version__ < "1.15":
+#if (not is_tf_keras) or tf.__version__ < "1.15":
 
-    if not is_tf_keras:
-        NodeBase = keras.engine.base_layer.Node
-    else:
-        from tensorflow.python.keras.engine import base_layer
+    #if not is_tf_keras:
+        #NodeBase = keras.engine.base_layer.Node
+    #else:
+        #from tensorflow.python.keras.engine import base_layer
 
-        NodeBase = base_layer.Node
+        #NodeBase = base_layer.Node
 
     class Node(NodeBase):
         """修改Node来修复keras下孪生网络的bug
@@ -119,10 +119,10 @@ if (not is_tf_keras) or tf.__version__ < "1.15":
         def arguments(self, value):
             self._arguments = value or {}
 
-    if not is_tf_keras:
-        keras.engine.base_layer.Node = Node
-    else:
-        base_layer.Node = Node
+    #if not is_tf_keras:
+        #keras.engine.base_layer.Node = Node
+    #else:
+        #base_layer.Node = Node
 
 
 class GlobalAveragePooling1D(keras.layers.GlobalAveragePooling1D):
