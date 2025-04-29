@@ -7,7 +7,7 @@ import tensorflow as tf
 import time
 import matplotlib.pyplot as plt
 import pandas as pd
-
+from tensorflow.keras.utils import get_custom_objects
 from bert4keras.backend import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
