@@ -47,9 +47,9 @@ def set_gelu(version):
     version = version.lower()
     assert version in ["erf", "tanh"], "gelu version must be erf or tanh"
     if version == "erf":
-        keras.utils.get_custom_objects()["gelu"] = gelu_erf
+        get_custom_objects()["gelu"] = gelu_erf
     else:
-        keras.utils.get_custom_objects()["gelu"] = gelu_tanh
+        get_custom_objects()["gelu"] = gelu_tanh
 
 
 def piecewise_linear(t, schedule, from_zero=True):
@@ -536,4 +536,4 @@ custom_objects = {
     "initializer": keras.initializers.glorot_uniform,  # 就当是默认初始化方案吧
 }
 
-keras.utils.get_custom_objects().update(custom_objects)
+get_custom_objects().update(custom_objects)
