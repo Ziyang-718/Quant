@@ -10,7 +10,7 @@ from tensorflow.python.client import device_lib
 from tensorflow.python.util import nest, tf_inspect
 from tensorflow.python.eager import tape
 from tensorflow.python.ops.custom_gradient import _graph_mode_decorator
-
+from tensorflow.keras.utils import get_custom_objects
 # 判断是tf.keras还是纯keras的标记
 is_tf_keras = strtobool(os.environ.get("TF_KERAS", "0"))
 
