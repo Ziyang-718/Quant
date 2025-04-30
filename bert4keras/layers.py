@@ -103,6 +103,7 @@ else:
         #from tensorflow.python.keras.engine import base_layer
 
         #NodeBase = base_layer.Node
+NodeBase = object
 
     class Node(NodeBase):
         """修改Node来修复keras下孪生网络的bug
