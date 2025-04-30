@@ -95,7 +95,7 @@ else:
             self.supports_masking = True  # 本项目的自定义层均可mask
 
 
-#if (not is_tf_keras) or tf.__version__ < "1.15":
+if (not is_tf_keras) or tf.__version__ < "1.15":
 
     #if not is_tf_keras:
         #NodeBase = keras.engine.base_layer.Node
@@ -103,7 +103,7 @@ else:
         #from tensorflow.python.keras.engine import base_layer
 
         #NodeBase = base_layer.Node
-NodeBase = object
+    NodeBase = object
 
     class Node(NodeBase):
         """修改Node来修复keras下孪生网络的bug
