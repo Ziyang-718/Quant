@@ -9,7 +9,8 @@ from bert4keras.snippets import is_one_of, insert_arguments
 from bert4keras.backend import piecewise_linear
 from bert4keras.backend import root_mean_square as rms
 import re
-
+from tensorflow.keras.utils import get_custom_objects
+from keras.optimizers import Adam
 
 class Adam(keras.optimizers.Optimizer):
     """重新定义Adam优化器，便于派生出新的优化器
@@ -1150,7 +1151,7 @@ if is_tf_keras:
     Lion = LionV2
     AdaFactor = AdaFactorV2
 else:
-    Adam = keras.optimizers.Adam
+    #Adam = keras.optimizers.Adam
     AdaFactor = AdaFactorV1
 
 AdaFactor.__name__ = 'AdaFactor'
@@ -1159,4 +1160,4 @@ custom_objects = {
     'AdaFactor': AdaFactor,
 }
 
-keras.utils.get_custom_objects().update(custom_objects)
+get_custom_objects().update(custom_objects)
