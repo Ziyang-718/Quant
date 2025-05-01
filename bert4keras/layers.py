@@ -1531,4 +1531,4 @@ custom_objects = {
     "Loss": Loss,
 }
 
-keras.utils.get_custom_objects().update(custom_objects)
+get_custom_objects().update(custom_objects)
