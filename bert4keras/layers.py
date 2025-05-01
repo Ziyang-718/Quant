@@ -11,7 +11,7 @@ from bert4keras.backend import sinusoidal_embeddings
 from bert4keras.backend import apply_rotary_position_embeddings
 from keras import initializers, activations
 from keras.layers import *
-
+from tensorflow.keras.utils import get_custom_objects
 
 def integerize_shape(func):
     """装饰器，保证input_shape一定是int或None"""
