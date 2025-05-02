@@ -567,6 +567,7 @@ def extend_with_piecewise_linear_lr(BaseOptimizer):
         """
         @insert_arguments(lr_schedule={0: 1})
         def __init__(self, *args, **kwargs):
+            kwargs.pop('name', None)
             super(NewOptimizer, self).__init__(*args, **kwargs)
             self.lr_schedule = {int(i): j for i, j in self.lr_schedule.items()}
 
