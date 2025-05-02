@@ -11,9 +11,10 @@ from bert4keras.backend import root_mean_square as rms
 import re
 from tensorflow.keras.utils import get_custom_objects
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Optimizer
 
 
-class Adam(keras.optimizers.Optimizer):
+class Adam(Optimizer):
     """重新定义Adam优化器，便于派生出新的优化器
     （tensorflow的optimizer_v2类）
     """
