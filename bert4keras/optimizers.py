@@ -27,6 +27,7 @@ class Adam(keras.optimizers.Optimizer):
         **kwargs
     ):
         kwargs['name'] = kwargs.get('name') or 'Adam'
+        kwargs.pop('name', None)
         super(Adam, self).__init__(**kwargs)
         self._set_hyper('learning_rate', learning_rate)
         self._set_hyper('beta_1', beta_1)
@@ -567,7 +568,6 @@ def extend_with_piecewise_linear_lr(BaseOptimizer):
         """
         @insert_arguments(lr_schedule={0: 1})
         def __init__(self, *args, **kwargs):
-            kwargs.pop('name', None)
             super(NewOptimizer, self).__init__(*args, **kwargs)
             self.lr_schedule = {int(i): j for i, j in self.lr_schedule.items()}
 
