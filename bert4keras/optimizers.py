@@ -10,7 +10,7 @@ from bert4keras.backend import piecewise_linear
 from bert4keras.backend import root_mean_square as rms
 import re
 from tensorflow.keras.utils import get_custom_objects
-from keras.optimizers.legacy import Adam
+from tensorflow.keras.optimizers import Adam
 
 
 class Adam(keras.optimizers.Optimizer):
