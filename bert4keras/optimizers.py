@@ -25,7 +25,7 @@ class Adam(Optimizer):
         beta_2=0.999,
         epsilon=1e-6,
         bias_correction=True,
-        name='Adam'
+        name='Adam',
         **kwargs
     ):
         kwargs['name'] = kwargs.get('name') or 'Adam'
