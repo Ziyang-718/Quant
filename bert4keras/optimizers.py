@@ -360,7 +360,7 @@ def export_to_custom_objects(base_extend_with):
             NewOptimizer.__name__ = name
 
         name = NewOptimizer.__name__
-        keras.utils.get_custom_objects()[name] = NewOptimizer
+        get_custom_objects()[name] = NewOptimizer
 
         return NewOptimizer
 
