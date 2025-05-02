@@ -18,7 +18,8 @@ from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
 from datasets import Dataset
 import jieba
-from tensorflow.keras.optimizers import Adam
+#from tensorflow.keras.optimizers import Adam
+from bert4keras.optimizers import Adam
 # Initialize jieba
 jieba.initialize()
 
