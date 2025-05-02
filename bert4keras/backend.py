@@ -305,17 +305,29 @@ def sparsemax(logits, axis=-1):
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
 
     r = tf.cast(tf.range(1, tf.shape(z)[axis] + 1), logits.dtype)
-    r_shape = [1] * tf.rank(z)
-    r_shape[axis] = -1
-    r = tf.reshape(r, r_shape)
+    
+    #r_shape = [1] * tf.rank(z)
+    #r_shape[axis] = -1
+    #r = tf.reshape(r, r_shape)
 
     # determine the support
+    #support = tf.cast(r * z_sorted > (z_cumsum - 1), logits.dtype)
+    #k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
+    #tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
+    #tau = (tau_sum - 1) / k_z
+    #return tf.maximum(z - tau, 0)
+
+    # Fix starts here
+    rank = tf.rank(z)
+    axis = axis if axis >= 0 else rank + axis  # handle negative axes
+    r_shape = tf.concat([tf.ones([axis], dtype=tf.int32), [-1]], axis=0)
+    r = tf.reshape(r, r_shape)
+
     support = tf.cast(r * z_sorted > (z_cumsum - 1), logits.dtype)
     k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
     tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
     tau = (tau_sum - 1) / k_z
     return tf.maximum(z - tau, 0)
-
 
 def attention_normalize(a, mask=None, axis=-1, method="sparsemax", bias=None):
     """不同的注意力归一化方案
