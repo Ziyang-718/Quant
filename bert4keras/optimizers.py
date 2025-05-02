@@ -31,7 +31,7 @@ class Adam(Optimizer):
         #kwargs['name'] = kwargs.get('name') or 'Adam'
         #kwargs.pop('name', None)
         #super(Adam, self).__init__(**kwargs)
-        super(MyAdam, self).__init__(name=name, **kwargs)
+        super(Adam, self).__init__(name=name, **kwargs)
         self._set_hyper('learning_rate', learning_rate)
         self._set_hyper('beta_1', beta_1)
         self._set_hyper('beta_2', beta_2)
