@@ -18,7 +18,7 @@ from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
 from datasets import Dataset
 import jieba
-
+from tensorflow.keras.optimizers import Adam
 # Initialize jieba
 jieba.initialize()
 
@@ -131,7 +131,7 @@ with strategy.scope():
     outputs = CrossEntropy(1)([y_in, model.output])
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
-    AdamW = extend_with_weight_decay(keras.optimizers.Adam, name='AdamW')
+    AdamW = extend_with_weight_decay(Adam, name='AdamW')
     AdamWLR = extend_with_piecewise_linear_lr(AdamW, name='AdamWLR')
     AdamWLRG = extend_with_gradient_accumulation(AdamWLR, name='AdamWLRG')
     optimizer = AdamWLRG(
