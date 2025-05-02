@@ -10,7 +10,8 @@ from bert4keras.backend import piecewise_linear
 from bert4keras.backend import root_mean_square as rms
 import re
 from tensorflow.keras.utils import get_custom_objects
-from keras.optimizers import Adam
+from keras.optimizers.legacy import Adam
+
 
 class Adam(keras.optimizers.Optimizer):
     """重新定义Adam优化器，便于派生出新的优化器
