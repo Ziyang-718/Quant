@@ -1,4 +1,3 @@
-
 #! -*- coding: utf-8 -*-
 # 词级别的中文RoFormer预训练
 # MLM任务
@@ -20,6 +19,7 @@ from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
+from bert4keras.backend import sparsemax
 import jieba
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -116,6 +116,44 @@ class CrossEntropy(Loss):
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         return loss
 
+# Replace CrossEntropy with SparseMaxLoss
+class SparseMaxLoss(Loss):
+    def compute_loss(self, inputs, mask=None):
+        y_true, y_pred_logits = inputs
+        y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
+        
+        # Apply sparsemax to logits
+        y_pred = sparsemax(y_pred_logits)
+        
+        # Compute accuracy (similar to the original implementation)
+        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
+        accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
+        self.add_metric(accuracy, name='accuracy', aggregation='mean')
+        
+        # Get the logit for the true class
+        y_true_flat = K.flatten(y_true)
+        y_pred_logits_flat = K.reshape(y_pred_logits, (-1, K.shape(y_pred_logits)[-1]))
+        y_pred_flat = K.reshape(y_pred, (-1, K.shape(y_pred)[-1]))
+        
+        # Create indices for gathering values
+        batch_range = K.arange(0, K.shape(y_true_flat)[0])
+        indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
+        
+        # Extract logit for the true class
+        z_y = tf.gather_nd(y_pred_logits_flat, indices)
+        
+        # Compute squared norm of sparsemax output
+        squared_norm = K.sum(K.square(y_pred_flat), axis=1)
+        
+        # Compute SparseMaxLoss: -z[y] + 0.5 * ||sparsemax(z)||^2 + 0.5
+        loss = -z_y + 0.5 * squared_norm + 0.5
+        
+        # Apply mask and normalize
+        loss = K.reshape(loss, K.shape(y_true))
+        loss = K.sum(loss * y_mask) / K.sum(y_mask)
+        
+        return loss
+
 with strategy.scope():
     bert = build_transformer_model(
         config_path,
@@ -128,7 +166,8 @@ with strategy.scope():
     model = bert.model
 
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
-    outputs = CrossEntropy(1)([y_in, model.output])
+    # outputs = CrossEntropy(1)([y_in, model.output])
+    outputs = SparseMaxLoss(1)([y_in, model.output])
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
     AdamW = extend_with_weight_decay(Adam, name='AdamW')
