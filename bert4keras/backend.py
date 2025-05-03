@@ -10,7 +10,7 @@ from tensorflow.python.client import device_lib
 from tensorflow.python.util import nest, tf_inspect
 from tensorflow.python.eager import tape
 from tensorflow.python.ops.custom_gradient import _graph_mode_decorator
-from tensorflow.keras.utils import get_custom_objects
+
 # 判断是tf.keras还是纯keras的标记
 is_tf_keras = strtobool(os.environ.get("TF_KERAS", "0"))
 
@@ -47,9 +47,9 @@ def set_gelu(version):
     version = version.lower()
     assert version in ["erf", "tanh"], "gelu version must be erf or tanh"
     if version == "erf":
-        get_custom_objects()["gelu"] = gelu_erf
+        keras.utils.get_custom_objects()["gelu"] = gelu_erf
     else:
-        get_custom_objects()["gelu"] = gelu_tanh
+        keras.utils.get_custom_objects()["gelu"] = gelu_tanh
 
 
 def piecewise_linear(t, schedule, from_zero=True):
@@ -305,29 +305,17 @@ def sparsemax(logits, axis=-1):
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
 
     r = tf.cast(tf.range(1, tf.shape(z)[axis] + 1), logits.dtype)
-    
-    #r_shape = [1] * tf.rank(z)
-    #r_shape[axis] = -1
-    #r = tf.reshape(r, r_shape)
-
-    # determine the support
-    #support = tf.cast(r * z_sorted > (z_cumsum - 1), logits.dtype)
-    #k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
-    #tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
-    #tau = (tau_sum - 1) / k_z
-    #return tf.maximum(z - tau, 0)
-
-    # Fix starts here
-    rank = tf.rank(z)
-    axis = axis if axis >= 0 else rank + axis  # handle negative axes
-    r_shape = tf.concat([tf.ones([axis], dtype=tf.int32), [-1]], axis=0)
+    r_shape = [1] * tf.rank(z)
+    r_shape[axis] = -1
     r = tf.reshape(r, r_shape)
 
+    # determine the support
     support = tf.cast(r * z_sorted > (z_cumsum - 1), logits.dtype)
     k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
     tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
     tau = (tau_sum - 1) / k_z
     return tf.maximum(z - tau, 0)
+
 
 def attention_normalize(a, mask=None, axis=-1, method="sparsemax", bias=None):
     """不同的注意力归一化方案
@@ -548,4 +536,4 @@ custom_objects = {
     "initializer": keras.initializers.glorot_uniform,  # 就当是默认初始化方案吧
 }
 
-get_custom_objects().update(custom_objects)
+keras.utils.get_custom_objects().update(custom_objects)

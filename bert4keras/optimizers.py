@@ -9,12 +9,9 @@ from bert4keras.snippets import is_one_of, insert_arguments
 from bert4keras.backend import piecewise_linear
 from bert4keras.backend import root_mean_square as rms
 import re
-from tensorflow.keras.utils import get_custom_objects
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.optimizers import Optimizer
 
 
-class Adam(Optimizer):
+class Adam(keras.optimizers.Optimizer):
     """重新定义Adam优化器，便于派生出新的优化器
     （tensorflow的optimizer_v2类）
     """
@@ -25,13 +22,10 @@ class Adam(Optimizer):
         beta_2=0.999,
         epsilon=1e-6,
         bias_correction=True,
-        name='Adam',
         **kwargs
     ):
-        #kwargs['name'] = kwargs.get('name') or 'Adam'
-        #kwargs.pop('name', None)
-        #super(Adam, self).__init__(**kwargs)
-        super(Adam, self).__init__(name=name, **kwargs)
+        kwargs['name'] = kwargs.get('name') or 'Adam'
+        super(Adam, self).__init__(**kwargs)
         self._set_hyper('learning_rate', learning_rate)
         self._set_hyper('beta_1', beta_1)
         self._set_hyper('beta_2', beta_2)
@@ -364,7 +358,7 @@ def export_to_custom_objects(base_extend_with):
             NewOptimizer.__name__ = name
 
         name = NewOptimizer.__name__
-        get_custom_objects()[name] = NewOptimizer
+        keras.utils.get_custom_objects()[name] = NewOptimizer
 
         return NewOptimizer
 
@@ -1156,7 +1150,7 @@ if is_tf_keras:
     Lion = LionV2
     AdaFactor = AdaFactorV2
 else:
-    #Adam = keras.optimizers.Adam
+    Adam = keras.optimizers.Adam
     AdaFactor = AdaFactorV1
 
 AdaFactor.__name__ = 'AdaFactor'
@@ -1165,4 +1159,4 @@ custom_objects = {
     'AdaFactor': AdaFactor,
 }
 
-get_custom_objects().update(custom_objects)
+keras.utils.get_custom_objects().update(custom_objects)
