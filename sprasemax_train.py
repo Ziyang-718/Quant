@@ -132,9 +132,9 @@ with strategy.scope():
     outputs = CrossEntropy(1)([y_in, model.output])
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
-    AdamW = extend_with_weight_decay(Adam)#, name='AdamW')
-    AdamWLR = extend_with_piecewise_linear_lr(AdamW)#, name='AdamWLR')
-    AdamWLRG = extend_with_gradient_accumulation(AdamWLR)#, name='AdamWLRG')
+    AdamW = extend_with_weight_decay(Adam, name='AdamW')
+    AdamWLR = extend_with_piecewise_linear_lr(AdamW, name='AdamWLR')
+    AdamWLRG = extend_with_gradient_accumulation(AdamWLR, name='AdamWLRG')
     optimizer = AdamWLRG(
         learning_rate=1e-5,
         weight_decay_rate=0.01,
