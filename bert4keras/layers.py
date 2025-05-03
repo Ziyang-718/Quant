@@ -417,7 +417,7 @@ class MultiHeadAttention(Layer):
         self,
         heads,
         head_size,
-        seq_len,
+        seq_len=None,
         proj_k=0,
         out_dim=None,
         key_size=None,
