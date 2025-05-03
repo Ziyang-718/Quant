@@ -305,7 +305,8 @@ def sparsemax(logits, axis=-1):
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
 
     r = tf.cast(tf.range(1, tf.shape(z)[axis] + 1), logits.dtype)
-    r_shape = [1] * tf.rank(z)
+    #r_shape = [1] * tf.rank(z)
+    r_shape = [1] * z.shape.rank
     r_shape[axis] = -1
     r = tf.reshape(r, r_shape)
 
