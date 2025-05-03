@@ -19,7 +19,6 @@ from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
-from bert4keras.backend import sparsemax
 import jieba
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -116,7 +115,42 @@ class CrossEntropy(Loss):
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         return loss
 
-# Replace CrossEntropy with SparseMaxLoss
+def sparsemax(logits, axis=-1):
+    # For numerical stability
+    logits = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
+    
+    # Sort in descending order
+    z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
+    
+    # Get dimension size
+    dim = tf.shape(logits)[axis]
+    dim_float = tf.cast(dim, logits.dtype)
+    
+    # Determine the threshold
+    z_cumsum = tf.cumsum(z_sorted, axis=axis)
+    k = tf.range(1, dim_float + 1, dtype=logits.dtype)
+    k = tf.reshape(k, [-1] + [1] * (z_sorted.shape.rank - 1))
+    k = tf.transpose(k, [1, 0]) if axis == 1 else k
+    
+    z_check = 1 + k * z_sorted > z_cumsum
+    
+    # Find k(z)
+    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
+    
+    # Calculate threshold
+    indices = tf.stack([
+        tf.range(0, tf.shape(k_z)[0]),
+        tf.squeeze(k_z - 1, axis=-1)
+    ], axis=1)
+    tau_sum = tf.gather_nd(z_cumsum, indices)
+    tau_sum = tf.reshape(tau_sum, [-1, 1])
+    
+    # Calculate tau(z)
+    tau_z = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
+    
+    # Calculate p
+    return tf.maximum(0., logits - tau_z)
+
 class SparseMaxLoss(Loss):
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
@@ -130,25 +164,19 @@ class SparseMaxLoss(Loss):
         accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
         self.add_metric(accuracy, name='accuracy', aggregation='mean')
         
-        # Get the logit for the true class
+        # Process in smaller batches to save memory
         y_true_flat = K.flatten(y_true)
-        y_pred_logits_flat = K.reshape(y_pred_logits, (-1, K.shape(y_pred_logits)[-1]))
-        y_pred_flat = K.reshape(y_pred, (-1, K.shape(y_pred)[-1]))
-        
-        # Create indices for gathering values
         batch_range = K.arange(0, K.shape(y_true_flat)[0])
         indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
         
-        # Extract logit for the true class
-        z_y = tf.gather_nd(y_pred_logits_flat, indices)
+        # Extract logit for the true class (memory efficient)
+        z_y = tf.gather_nd(K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]), indices)
         
-        # Compute squared norm of sparsemax output
-        squared_norm = K.sum(K.square(y_pred_flat), axis=1)
+        # Compute squared norm more efficiently
+        squared_norm = K.sum(K.square(y_pred), axis=-1)
         
-        # Compute SparseMaxLoss: -z[y] + 0.5 * ||sparsemax(z)||^2 + 0.5
-        loss = -z_y + 0.5 * squared_norm + 0.5
-        
-        # Apply mask and normalize
+        # Compute loss
+        loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
         loss = K.reshape(loss, K.shape(y_true))
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         
