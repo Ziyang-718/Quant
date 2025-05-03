@@ -1,58 +1,61 @@
 
+#! -*- coding: utf-8 -*-
+# 词级别的中文RoFormer预训练
+# MLM任务
 
 import os
+os.environ['TF_KERAS'] = '1'  # 必须使用tf.keras
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import json
 import numpy as np
 import tensorflow as tf
-import time
-import matplotlib.pyplot as plt
-import pandas as pd
-from tensorflow.keras.utils import get_custom_objects
 from bert4keras.backend import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer
-from bert4keras.optimizers import extend_with_weight_decay, extend_with_piecewise_linear_lr, extend_with_gradient_accumulation
+from tensorflow.keras.optimizers import Adam
+from bert4keras.optimizers import extend_with_weight_decay
+from bert4keras.optimizers import extend_with_piecewise_linear_lr
+from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
-from datasets import Dataset
 import jieba
-from tensorflow.keras.optimizers import Adam
-#from bert4keras.optimizers import Adam
-# Initialize jieba
+import matplotlib.pyplot as plt
+import pandas as pd
+
 jieba.initialize()
 
-# Environment settings
-os.environ['TF_KERAS'] = '1'  # Use tf.keras
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+from datasets import Dataset
 os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-
-
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 print("Saving to:", os.getcwd())
-
-# GPU memory growth
 gpus = tf.config.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
+# Optional: Set GPU memory growth
+physical_gpus = tf.config.list_physical_devices('GPU')
+for gpu in physical_gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
 
-# MultiWorker strategy
+
+
+# Use MultiWorker strategy
 strategy = tf.distribute.MultiWorkerMirroredStrategy()
 
-# Basic parameters
+# 基本参数
 maxlen = 512
 batch_size = 64
 epochs = 100
 
-# Bert paths
+# bert配置
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
 checkpoint_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_model.ckpt'
 dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 
-# Dataset
 def corpus():
     file_path = "kaggle_dataset/train/dataset.arrow"
     ds = Dataset.from_file(file_path)
@@ -62,23 +65,21 @@ def corpus():
 
 def text_process(text):
     texts = text_segmentate(text, 32, u'\n。')
-    result = ''
+    result, length = '', 0
     for text in texts:
         if result and len(result) + len(text) > maxlen * 1.5:
             yield result
-            result = ''
+            result, length = '', 0
         result += text
     if result:
         yield result
 
-# Tokenizer
 tokenizer = Tokenizer(
     dict_path,
     do_lower_case=True,
     pre_tokenize=lambda s: jieba.cut(s, HMM=False)
 )
 
-# Random masking for MLM
 def random_masking(token_ids):
     rands = np.random.random(len(token_ids))
     source, target = [], []
@@ -97,7 +98,6 @@ def random_masking(token_ids):
             target.append(0)
     return source, target
 
-# Data generator
 class data_generator(DataGenerator):
     def __iter__(self, random=False):
         for is_end, text in self.sample(random):
@@ -105,7 +105,6 @@ class data_generator(DataGenerator):
             source, target = random_masking(token_ids)
             yield source, segment_ids, target
 
-# Loss function
 class CrossEntropy(Loss):
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred = inputs
@@ -146,27 +145,12 @@ with strategy.scope():
     train_model.summary()
     bert.load_weights_from_checkpoint(checkpoint_path)
 
-    # Model Parameters and Size Info
-    trainable_params = np.sum([K.count_params(w) for w in train_model.trainable_weights])
-    non_trainable_params = np.sum([K.count_params(w) for w in train_model.non_trainable_weights])
-    total_params = trainable_params + non_trainable_params
-
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-    print(f"Non-trainable parameters: {non_trainable_params:,}")
-
-    size_in_bytes = total_params * 4  # float32 = 4 bytes
-    size_in_mb = size_in_bytes / (1024 ** 2)
-    print(f"Estimated model size: {size_in_mb:.2f} MB")
-
-# Evaluator callback
 class Evaluator(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         model.save_weights('bert_model.weights')
 
 if __name__ == '__main__':
     print("GPUs available:", tf.config.list_physical_devices('GPU'))
-
     evaluator = Evaluator()
     train_generator = data_generator(corpus(), batch_size, 10**5)
     dataset = train_generator.to_dataset(
@@ -176,25 +160,14 @@ if __name__ == '__main__':
         padded_batch=True
     )
 
-    # --- Training start time ---
-    start_time = time.time()
-
     history = train_model.fit(
         dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
     )
 
-    # --- Training end time ---
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"Total training time: {elapsed_time:.2f} seconds ({elapsed_time/3600:.2f} hours)")
-
-    # Save training time
-    with open('/workspace/Quant/training_time.txt', 'w') as f:
-        f.write(f"Total training time: {elapsed_time:.2f} seconds ({elapsed_time/3600:.2f} hours)\n")
-
     # Plot training accuracy and loss
     plt.figure(figsize=(12, 5))
 
+    # Accuracy
     plt.subplot(1, 2, 1)
     plt.plot(history.history['accuracy'], label='Training Accuracy')
     plt.title('Training Accuracy')
@@ -202,6 +175,7 @@ if __name__ == '__main__':
     plt.ylabel('Accuracy')
     plt.legend()
 
+    # Loss
     plt.subplot(1, 2, 2)
     plt.plot(history.history['loss'], label='Training Loss', color='orange')
     plt.title('Training Loss')
@@ -210,15 +184,16 @@ if __name__ == '__main__':
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig('/workspace/Quant/Training_Accuracy_and_Loss_Curve.png')
+    #plt.savefig('Training_Accuracy_and_Loss_Curve.png')
+    plt.savefig('/workspace/Quant/Sparsemax_Training_Accuracy_and_Loss_Curve.png')
     plt.show()
-
     print("Saving to:", os.getcwd())
+    # Add after training
     print("History keys:", history.history.keys())
     print("Accuracy values:", history.history.get('accuracy', []))
     print("Loss values:", history.history.get('loss', []))
-
     metrics_df = pd.DataFrame(history.history)
+    # Save to CSV file inside your host-mounted folder
     metrics_df.to_csv('/workspace/Quant/training_metrics.csv', index=False)
 
 else:
