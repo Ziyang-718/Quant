@@ -47,7 +47,7 @@ strategy = tf.distribute.MultiWorkerMirroredStrategy()
 
 # 基本参数
 maxlen = 512
-batch_size = 64
+batch_size = 18
 epochs = 100
 
 # bert配置
