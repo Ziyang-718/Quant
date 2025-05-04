@@ -138,12 +138,19 @@ def sparsemax(logits, axis=-1):
     k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
     
     # Calculate threshold
-    indices = tf.stack([
-        tf.range(0, tf.shape(k_z)[0]),
-        tf.squeeze(k_z - 1, axis=-1)
-    ], axis=1)
-    tau_sum = tf.gather_nd(z_cumsum, indices)
-    tau_sum = tf.reshape(tau_sum, [-1, 1])
+     #=== BEGIN PATCH for rank consistency ===#
+    # Flatten k_z into a 1-D vector of length batch_size
+    batch_size = tf.shape(k_z)[0]
+    # k_z is shape [batch_size, 1]; subtract 1 and reshape to [batch_size]
+    k_z_flat = tf.reshape(k_z - 1, [batch_size])
+
+    # Build the indices for each example: [[0, k0], [1, k1], ..., [batch-1, k_{batch-1}]]
+    batch_idx = tf.range(batch_size, dtype=tf.int32)
+    indices = tf.stack([batch_idx, tf.cast(k_z_flat, tf.int32)], axis=1)
+
+    # Gather the cumsum value at the k-th position for each batch example
+    tau_sum = tf.gather_nd(z_cumsum, indices)          # shape [batch_size]
+    tau_sum = tf.reshape(tau_sum, [batch_size, 1])     # back to [batch_size,1]
     
     # Calculate tau(z)
     tau_z = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
