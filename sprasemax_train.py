@@ -115,48 +115,48 @@ class CrossEntropy(Loss):
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         return loss
 
+
 def sparsemax(logits, axis=-1):
-    # For numerical stability
-    logits = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
-    
-    # Sort in descending order
+    # 1) Stabilize
+    logits -= tf.reduce_max(logits, axis=axis, keepdims=True)
+
+    # 2) Sort
     z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
-    
-    # Get dimension size
+
+    # 3) Cumsum & range
+    z_cumsum = tf.cumsum(z_sorted, axis=axis)
     dim = tf.shape(logits)[axis]
     dim_float = tf.cast(dim, logits.dtype)
     
-    # Determine the threshold
-    z_cumsum = tf.cumsum(z_sorted, axis=axis)
-    k = tf.range(1, dim_float + 1, dtype=logits.dtype)
-    k = tf.reshape(k, [-1] + [1] * (z_sorted.shape.rank - 1))
-    k = tf.transpose(k, [1, 0]) if axis == 1 else k
-    
+    # Build k = [1,2,…,dim] with shape [1,…,1, dim, 1,…,1]
+    rank = logits.shape.rank or tf.rank(logits)
+    # Create a shape of all ones, but size ‘dim’ at the projection axis:
+    k_shape = [1] * rank
+    k_shape[axis] = dim
+    # Now build and reshape:
+    k = tf.reshape(tf.range(1, dim_float + 1, dtype=logits.dtype), k_shape)
+
+    # 4) Threshold condition
     z_check = 1 + k * z_sorted > z_cumsum
-    
-    # Find k(z)
     k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
-    
-    # Calculate threshold
-     #=== BEGIN PATCH for rank consistency ===#
-    # Flatten k_z into a 1-D vector of length batch_size
+
+    # 5) Compute tau
+    # (Use same flat-index pattern you already have—now k_z has correct shape)
     batch_size = tf.shape(k_z)[0]
-    # k_z is shape [batch_size, 1]; subtract 1 and reshape to [batch_size]
-    k_z_flat = tf.reshape(k_z - 1, [batch_size])
+    k_z_flat = tf.reshape(k_z - 1, [batch_size])    # shape [batch]
+    batch_idx = tf.range(batch_size, dtype=tf.int32) # shape [batch]
+    indices = tf.stack([batch_idx, k_z_flat], axis=1)
 
-    # Build the indices for each example: [[0, k0], [1, k1], ..., [batch-1, k_{batch-1}]]
-    batch_idx = tf.range(batch_size, dtype=tf.int32)
-    indices = tf.stack([batch_idx, tf.cast(k_z_flat, tf.int32)], axis=1)
+    tau_sum = tf.gather_nd(
+        tf.reshape(z_cumsum, [batch_size, dim]),     # reshape z_cumsum to 2D: [batch, dim]
+        indices                                      # gathering along the class dim
+    )
+    tau = tf.reshape((tau_sum - 1) / tf.cast(k_z_flat + 1, logits.dtype),
+                     [batch_size, 1] + [1] * (rank - 2))
 
-    # Gather the cumsum value at the k-th position for each batch example
-    tau_sum = tf.gather_nd(z_cumsum, indices)          # shape [batch_size]
-    tau_sum = tf.reshape(tau_sum, [batch_size, 1])     # back to [batch_size,1]
-    
-    # Calculate tau(z)
-    tau_z = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
-    
-    # Calculate p
-    return tf.maximum(0., logits - tau_z)
+    # 6) Final projection
+    return tf.maximum(0., logits - tau)
+
 
 class SparseMaxLoss(Loss):
     def compute_loss(self, inputs, mask=None):
