@@ -127,35 +127,37 @@ def sparsemax(logits, axis=-1):
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
     dim = tf.shape(logits)[axis]
     dim_float = tf.cast(dim, logits.dtype)
-    
-    # Build k = [1,2,…,dim] with shape [1,…,1, dim, 1,…,1]
-    rank = logits.shape.rank or tf.rank(logits)
-    # Create a shape of all ones, but size ‘dim’ at the projection axis:
-    k_shape = [1] * rank
-    k_shape[axis] = dim
-    # Now build and reshape:
-    k = tf.reshape(tf.range(1, dim_float + 1, dtype=logits.dtype), k_shape)
 
-    # 4) Threshold condition
+    # Shape-safe k = 1, 2, ..., dim
+    k = tf.cast(tf.range(1, tf.shape(z_sorted)[axis] + 1), logits.dtype)
+
+    # Reshape `k` to broadcast on `axis`
+    k_shape = tf.ones_like(tf.shape(logits))
+    k_shape = tf.tensor_scatter_nd_update(k_shape, [[axis]], [dim])
+    k = tf.reshape(k, k_shape)
+
+    # 4) Determine threshold
     z_check = 1 + k * z_sorted > z_cumsum
     k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
 
     # 5) Compute tau
-    # (Use same flat-index pattern you already have—now k_z has correct shape)
-    batch_size = tf.shape(k_z)[0]
-    k_z_flat = tf.reshape(k_z - 1, [batch_size])    # shape [batch]
-    batch_idx = tf.range(batch_size, dtype=tf.int32) # shape [batch]
-    indices = tf.stack([batch_idx, k_z_flat], axis=1)
+    def compute_tau(z_cumsum, k_z):
+        # Compute tau for each slice along axis
+        def _tau_single(inputs):
+            z_cumsum_slice, k_z_val = inputs
+            k = tf.cast(k_z_val, tf.int32)
+            tau = (z_cumsum_slice[k - 1] - 1.0) / tf.cast(k, logits.dtype)
+            return tau
+        z_cumsum_flat = tf.reshape(z_cumsum, [-1, dim])
+        k_z_flat = tf.reshape(k_z, [-1])
+        tau = tf.map_fn(_tau_single, (z_cumsum_flat, k_z_flat), dtype=logits.dtype)
+        return tf.reshape(tau, tf.shape(k_z))
 
-    tau_sum = tf.gather_nd(
-        tf.reshape(z_cumsum, [batch_size, dim]),     # reshape z_cumsum to 2D: [batch, dim]
-        indices                                      # gathering along the class dim
-    )
-    tau = tf.reshape((tau_sum - 1) / tf.cast(k_z_flat + 1, logits.dtype),
-                     [batch_size, 1] + [1] * (rank - 2))
+    tau = compute_tau(z_cumsum, k_z)
 
     # 6) Final projection
-    return tf.maximum(0., logits - tau)
+    output = tf.maximum(0.0, logits - tau)
+    return output
 
 
 class SparseMaxLoss(Loss):
