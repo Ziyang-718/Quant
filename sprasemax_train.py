@@ -118,46 +118,32 @@ class CrossEntropy(Loss):
 
 def sparsemax(logits, axis=-1):
     # 1) Stabilize
-    logits -= tf.reduce_max(logits, axis=axis, keepdims=True)
+    logits = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
 
-    # 2) Sort
-    z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
+    # 2) Sort logits
+    z_sorted = tf.sort(logits, direction='DESCENDING', axis=axis)
 
-    # 3) Cumsum & range
+    # 3) Compute cumulative sum
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
-    dim = tf.shape(logits)[axis]
-    dim_float = tf.cast(dim, logits.dtype)
 
-    # Shape-safe k = 1, 2, ..., dim
-    k = tf.cast(tf.range(1, tf.shape(z_sorted)[axis] + 1), logits.dtype)
+    # 4) Create range of 1...k
+    r = tf.range(tf.shape(logits)[axis], dtype=logits.dtype) + 1
+    r_shape = [1] * tf.rank(logits)
+    r_shape[axis] = -1
+    r = tf.reshape(r, r_shape)
 
-    # Reshape `k` to broadcast on `axis`
-    k_shape = tf.ones_like(tf.shape(logits))
-    k_shape = tf.tensor_scatter_nd_update(k_shape, [[axis]], [dim])
-    k = tf.reshape(k, k_shape)
+    # 5) Determine sparsity
+    z_check = 1 + r * z_sorted > z_cumsum
+    k = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
 
-    # 4) Determine threshold
-    z_check = 1 + k * z_sorted > z_cumsum
-    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
+    # 6) Compute threshold tau
+    k_float = tf.cast(k, logits.dtype)
+    z_cumsum_safe = tf.where(z_check, z_cumsum, tf.zeros_like(z_cumsum))
+    tau = (tf.reduce_sum(z_cumsum_safe, axis=axis, keepdims=True) - 1) / k_float
 
-    # 5) Compute tau
-    def compute_tau(z_cumsum, k_z):
-        # Compute tau for each slice along axis
-        def _tau_single(inputs):
-            z_cumsum_slice, k_z_val = inputs
-            k = tf.cast(k_z_val, tf.int32)
-            tau = (z_cumsum_slice[k - 1] - 1.0) / tf.cast(k, logits.dtype)
-            return tau
-        z_cumsum_flat = tf.reshape(z_cumsum, [-1, dim])
-        k_z_flat = tf.reshape(k_z, [-1])
-        tau = tf.map_fn(_tau_single, (z_cumsum_flat, k_z_flat), dtype=logits.dtype)
-        return tf.reshape(tau, tf.shape(k_z))
+    # 7) Project onto simplex
+    return tf.maximum(0., logits - tau)
 
-    tau = compute_tau(z_cumsum, k_z)
-
-    # 6) Final projection
-    output = tf.maximum(0.0, logits - tau)
-    return output
 
 
 class SparseMaxLoss(Loss):
