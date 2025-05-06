@@ -118,73 +118,76 @@ class CrossEntropy(Loss):
 
 def sparsemax(logits, axis=-1):
     # 1) Stabilize
-    logits = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
+    logits -= tf.reduce_max(logits, axis=axis, keepdims=True)
 
-    # 2) Sort logits
-    z_sorted = tf.sort(logits, direction='DESCENDING', axis=axis)
+    # 2) Sort
+    z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
 
-    # 3) Compute cumulative sum
+    # 3) Cumsum & range
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
+    dim = tf.shape(logits)[axis]
+    dim_float = tf.cast(dim, logits.dtype)
+    
+    # Build k = [1,2,…,dim] with shape [1,…,1, dim, 1,…,1]
+    rank = logits.shape.rank or tf.rank(logits)
+    # Create a shape of all ones, but size ‘dim’ at the projection axis:
+    k_shape = [1] * rank
+    k_shape[axis] = dim
+    # Now build and reshape:
+    k = tf.reshape(tf.range(1, dim_float + 1, dtype=logits.dtype), k_shape)
 
-    # 4) Create range of 1...k
-    r = tf.range(tf.shape(logits)[axis], dtype=logits.dtype) + 1
-    r_shape = [1] * tf.rank(logits)
-    r_shape[axis] = -1
-    r = tf.reshape(r, r_shape)
+    # 4) Threshold condition
+    z_check = 1 + k * z_sorted > z_cumsum
+    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
 
-    # 5) Determine sparsity
-    z_check = 1 + r * z_sorted > z_cumsum
-    k = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
+    # 5) Compute tau
+    # (Use same flat-index pattern you already have—now k_z has correct shape)
+    batch_size = tf.shape(k_z)[0]
+    k_z_flat = tf.reshape(k_z - 1, [batch_size])    # shape [batch]
+    batch_idx = tf.range(batch_size, dtype=tf.int32) # shape [batch]
+    indices = tf.stack([batch_idx, k_z_flat], axis=1)
 
-    # 6) Compute threshold tau
-    k_float = tf.cast(k, logits.dtype)
-    z_cumsum_safe = tf.where(z_check, z_cumsum, tf.zeros_like(z_cumsum))
-    tau = (tf.reduce_sum(z_cumsum_safe, axis=axis, keepdims=True) - 1) / k_float
+    tau_sum = tf.gather_nd(
+        tf.reshape(z_cumsum, [batch_size, dim]),     # reshape z_cumsum to 2D: [batch, dim]
+        indices                                      # gathering along the class dim
+    )
+    tau = tf.reshape((tau_sum - 1) / tf.cast(k_z_flat + 1, logits.dtype),
+                     [batch_size, 1] + [1] * (rank - 2))
 
-    # 7) Project onto simplex
+    # 6) Final projection
     return tf.maximum(0., logits - tau)
-
 
 
 class SparseMaxLoss(Loss):
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-
+        
         # Apply sparsemax to logits
         y_pred = sparsemax(y_pred_logits)
-
-        # Flatten predictions and labels
+        
+        # Compute accuracy (similar to the original implementation)
+        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
+        accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
+        self.add_metric(accuracy, name='accuracy', aggregation='mean')
+        
+        # Process in smaller batches to save memory
         y_true_flat = K.flatten(y_true)
-        y_pred_logits_flat = K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]])
-        y_pred_flat = K.reshape(y_pred, [-1, K.shape(y_pred_logits)[-1]])
-        y_mask_flat = K.flatten(y_mask)
-
-        # Build index for true class logits
         batch_range = K.arange(0, K.shape(y_true_flat)[0])
         indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
-
-        # Gather true class logits
-        z_y = tf.gather_nd(y_pred_logits_flat, indices)
-
-        # Compute squared norm
-        squared_norm = K.sum(K.square(y_pred_flat), axis=-1)
-
+        
+        # Extract logit for the true class (memory efficient)
+        z_y = tf.gather_nd(K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]), indices)
+        
+        # Compute squared norm more efficiently
+        squared_norm = K.sum(K.square(y_pred), axis=-1)
+        
         # Compute loss
-        loss = -z_y + 0.5 * squared_norm + 0.5
-
-        # Apply mask and compute mean loss
-        loss = loss * y_mask_flat
-        loss = K.sum(loss) / (K.sum(y_mask_flat) + K.epsilon())
-
-        # Compute accuracy (optional)
-        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy = K.sum(accuracy * y_mask) / (K.sum(y_mask) + K.epsilon())
-        self.add_metric(accuracy, name='accuracy', aggregation='mean')
-
+        loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
+        loss = K.reshape(loss, K.shape(y_true))
+        loss = K.sum(loss * y_mask) / K.sum(y_mask)
+        
         return loss
-
-
 
 with strategy.scope():
     bert = build_transformer_model(
