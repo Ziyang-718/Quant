@@ -162,40 +162,32 @@ class SparseMaxLoss(Loss):
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-
+        
         # Apply sparsemax to logits
         y_pred = sparsemax(y_pred_logits)
-
-        # Flatten predictions and labels
+        
+        # Compute accuracy (similar to the original implementation)
+        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
+        accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
+        self.add_metric(accuracy, name='accuracy', aggregation='mean')
+        
+        # Process in smaller batches to save memory
         y_true_flat = K.flatten(y_true)
-        y_pred_logits_flat = K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]])
-        y_pred_flat = K.reshape(y_pred, [-1, K.shape(y_pred_logits)[-1]])
-        y_mask_flat = K.flatten(y_mask)
-
-        # Build index for true class logits
         batch_range = K.arange(0, K.shape(y_true_flat)[0])
         indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
-
-        # Gather true class logits
-        z_y = tf.gather_nd(y_pred_logits_flat, indices)
-
-        # Compute squared norm
-        squared_norm = K.sum(K.square(y_pred_flat), axis=-1)
-
+        
+        # Extract logit for the true class (memory efficient)
+        z_y = tf.gather_nd(K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]), indices)
+        
+        # Compute squared norm more efficiently
+        squared_norm = K.sum(K.square(y_pred), axis=-1)
+        
         # Compute loss
-        loss = -z_y + 0.5 * squared_norm + 0.5
-
-        # Apply mask and compute mean loss
-        loss = loss * y_mask_flat
-        loss = K.sum(loss) / (K.sum(y_mask_flat) + K.epsilon())
-
-        # Compute accuracy (optional)
-        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy = K.sum(accuracy * y_mask) / (K.sum(y_mask) + K.epsilon())
-        self.add_metric(accuracy, name='accuracy', aggregation='mean')
-
+        loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
+        loss = K.reshape(loss, K.shape(y_true))
+        loss = K.sum(loss * y_mask) / K.sum(y_mask)
+        
         return loss
-
 
 with strategy.scope():
     bert = build_transformer_model(
