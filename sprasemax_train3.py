@@ -113,6 +113,7 @@ class CrossEntropy(Loss):
         loss = K.sum(loss * y_mask) / K.sum(y_mask)
         return loss
 
+
 def sparsemax(logits, axis=-1):
     """Improved sparsemax implementation with numerical stability.
     
@@ -139,18 +140,16 @@ def sparsemax(logits, axis=-1):
     # 3) Compute cumulative sum
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
     
-    # Get dimension size
-    dim = tf.shape(logits)[axis]
-    dim_float = tf.cast(dim, tf.float32)
+    # Get dimension sizes
+    input_shape = tf.shape(logits)
+    batch_size = input_shape[0]
+    seq_len = input_shape[1]
+    vocab_size = input_shape[2]  # This should be the size along the axis=-1
     
-    # Create k values (1 to dim)
-    k_indices = tf.range(1, dim_float + 1, dtype=tf.float32)
-    
-    # Reshape k for broadcasting with z_sorted and z_cumsum
-    # Create shape [1,1,...,dim,...,1] with dim at the specified axis
-    k_shape = tf.ones_like(tf.shape(logits), dtype=tf.int32)
-    k_shape = tf.tensor_scatter_nd_update(k_shape, [[axis]], [dim])
-    k = tf.reshape(k_indices, k_shape)
+    # Create k values [1, 2, 3, ..., vocab_size]
+    k = tf.range(1, vocab_size + 1, dtype=tf.float32)
+    # Make sure k has proper shape for broadcasting
+    k = tf.reshape(k, [1, 1, vocab_size])  # [1, 1, vocab_size] for broadcasting
     
     # 4) Compute threshold condition: 1 + k*z > cumsum
     threshold_condition = 1.0 + k * z_sorted > z_cumsum
@@ -164,40 +163,65 @@ def sparsemax(logits, axis=-1):
     )
     
     # 5) Count elements that satisfy condition
-    k_z = tf.reduce_sum(tf.cast(safe_condition, tf.int32), axis=axis, keepdims=True)
+    k_z = tf.reduce_sum(tf.cast(safe_condition, tf.int32), axis=axis, keepdims=True)  # [batch, seq_len, 1]
     # Ensure k_z is at least 1 to avoid division by zero
     k_z_safe = tf.maximum(k_z, 1)
     k_z_float = tf.cast(k_z_safe, tf.float32)
     
     # 6) Compute threshold tau
-    # Use safe approach with masks instead of gather_nd
-    # Create mask that selects only the k_z-th element for each sample
-    range_indices = tf.range(1, dim + 1, dtype=tf.int32)
-    range_indices = tf.reshape(range_indices, k_shape)
-    mask = tf.equal(range_indices, k_z)
+    # Create indices for each element in the batch
+    batch_indices = tf.range(batch_size)  # [batch_size]
+    seq_indices = tf.range(seq_len)  # [seq_len]
     
-    # Compute cumsum up to k_z
-    masked_cumsum = tf.cast(mask, tf.float32) * z_cumsum
-    # Sum all values (only the masked value will contribute)
-    tau_sum = tf.reduce_sum(masked_cumsum, axis=axis, keepdims=True)
+    # Create a mesh grid of indices
+    mesh_batch, mesh_seq = tf.meshgrid(batch_indices, seq_indices, indexing='ij')  # [batch_size, seq_len]
     
-    # Calculate tau: (tau_sum - 1) / k_z
-    tau = (tau_sum - 1.0) / k_z_float
+    # Flatten mesh grid and k_z
+    flat_batch_indices = tf.reshape(mesh_batch, [-1])  # [batch_size * seq_len]
+    flat_seq_indices = tf.reshape(mesh_seq, [-1])  # [batch_size * seq_len]
+    flat_k_z = tf.reshape(k_z_safe - 1, [-1])  # [batch_size * seq_len]
     
-    # 7) Final projection
-    projection = tf.maximum(0.0, logits_stabilized - tau)
+    # Stack indices for gather_nd
+    indices = tf.stack([flat_batch_indices, flat_seq_indices, flat_k_z], axis=1)  # [batch_size * seq_len, 3]
+    
+    # Gather the cumulative sum values at the threshold
+    # Reshape z_cumsum to match the indices
+    z_cumsum_3d = tf.reshape(z_cumsum, [batch_size, seq_len, vocab_size])
+    
+    # Use try-except to handle potential out-of-bounds errors
+    try:
+        tau_sum = tf.gather_nd(z_cumsum_3d, indices)  # [batch_size * seq_len]
+    except tf.errors.InvalidArgumentError:
+        # Fallback for safety - use a constant if gather_nd fails
+        print("Warning: gather_nd failed, using fallback")
+        tau_sum = tf.ones([batch_size * seq_len], dtype=tf.float32)
+    
+    # Reshape to match original batch and sequence dimensions
+    tau_sum = tf.reshape(tau_sum, [batch_size, seq_len])  # [batch_size, seq_len]
+    
+    # Calculate the threshold with safety measures
+    tau = (tau_sum - 1.0) / (tf.cast(k_z_safe, tf.float32) + eps)  # [batch_size, seq_len]
+    
+    # Clip tau to avoid extreme values
+    tau = tf.clip_by_value(tau, -1e6, 1e6)
+    
+    # Reshape tau for broadcasting against logits
+    tau = tf.reshape(tau, [batch_size, seq_len, 1])  # [batch_size, seq_len, 1]
+    
+    # 7) Final projection with epsilon to avoid numerical issues
+    result = tf.maximum(0.0, logits_stabilized - tau + eps)
     
     # Normalize to ensure sum to 1.0 (important for numerical stability)
-    projection_sum = tf.reduce_sum(projection, axis=axis, keepdims=True)
-    normalized_projection = projection / (projection_sum + eps)
+    sum_result = tf.reduce_sum(result, axis=axis, keepdims=True)
+    normalized_result = result / (sum_result + eps)
     
-    # Replace NaN values with uniform distribution
-    is_nan = tf.math.is_nan(normalized_projection)
-    uniform_value = 1.0 / dim_float
+    # Replace any potential NaN values with uniform distribution
+    is_nan = tf.math.is_nan(normalized_result)
+    uniform_value = 1.0 / tf.cast(vocab_size, tf.float32)
     safe_projection = tf.where(
         is_nan,
-        tf.ones_like(normalized_projection) * uniform_value,
-        normalized_projection
+        tf.ones_like(normalized_result) * uniform_value,
+        normalized_result
     )
     
     return safe_projection
@@ -290,8 +314,7 @@ with strategy.scope():
         grad_accum_steps=4,
         lr_schedule={40000: 1},  # Longer schedule
         clipnorm=1.0,  # Add gradient norm clipping
-        clipvalue=10.0,  # Add gradient value clipping
-        epsilon=1e-8  # Increase epsilon for numerical stability
+        clipvalue=10.0  # Add gradient value clipping
     )
     
     # Compile with experimental options for stability
