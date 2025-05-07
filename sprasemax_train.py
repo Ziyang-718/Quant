@@ -140,19 +140,26 @@ def sparsemax(logits, axis=-1):
     z_check = 1 + k * z_sorted > z_cumsum
     k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
 
-    # 5) Compute tau
-    # (Use same flat-index pattern you already have—now k_z has correct shape)
-    batch_size = tf.shape(k_z)[0]
-    k_z_flat = tf.reshape(k_z - 1, [batch_size])    # shape [batch]
-    batch_idx = tf.range(batch_size, dtype=tf.int32) # shape [batch]
-    indices = tf.stack([batch_idx, k_z_flat], axis=1)
+   # 5) Compute tau  
+# z_cumsum: [B, L, C], k_z: [B, L, 1]
 
-    tau_sum = tf.gather_nd(
-        tf.reshape(z_cumsum, [batch_size, dim]),     # reshape z_cumsum to 2D: [batch, dim]
-        indices                                      # gathering along the class dim
-    )
-    tau = tf.reshape((tau_sum - 1) / tf.cast(k_z_flat + 1, logits.dtype),
-                     [batch_size, 1] + [1] * (rank - 2))
+#  5a) Flatten batch×seq → N = B*L examples
+shape      = tf.shape(z_cumsum)          # [B, L, C]
+B, L, C    = shape[0], shape[1], shape[2]
+z_cumsum_f = tf.reshape(z_cumsum, [-1, C])  # [N, C]
+k_z_f      = tf.reshape(k_z - 1,     [-1])   # [N]
+
+#  5b) Build flat indices for gather_nd
+N = tf.shape(k_z_f)[0]                       # N = B*L
+batch_idx = tf.range(N, dtype=tf.int32)      # [N]
+indices   = tf.stack([batch_idx, tf.cast(k_z_f, tf.int32)], axis=1)  # [N,2]
+
+#  5c) Gather the per-example cumulative sum at k (τ numerator)
+tau_sum_f = tf.gather_nd(z_cumsum_f, indices)  # [N]
+
+#  5d) Reshape back to [B, L, 1] and compute τ
+tau_sum = tf.reshape(tau_sum_f, [B, L, 1])      
+tau_z    = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
 
     # 6) Final projection
     return tf.maximum(0., logits - tau)
