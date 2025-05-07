@@ -114,158 +114,200 @@ class CrossEntropy(Loss):
         return loss
 
 
-def sparsemax(logits, axis=-1):
-    """Simplified sparsemax implementation with fixed broadcasting.
+def efficient_sparsemax(logits, axis=-1):
+    """Efficient sparsemax implementation with better numerical stability for training.
     
-    This version avoids complex operations that could cause broadcasting issues.
+    This implementation combines efficiency with numerical stability to ensure
+    proper gradient flow during training.
     """
-    epsilon = 1e-12  # Numerical stability constant
+    # For numerical stability
+    epsilon = 1e-10
     
-    # Cast to float32 for stability
+    # Cast inputs to float32
     logits = tf.cast(logits, tf.float32)
     
-    # Step 1: Apply standard softmax-style normalization
-    # Subtract max for numerical stability
-    logits_shifted = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
+    # Get original shape
+    original_shape = tf.shape(logits)
     
-    # Step 2: Sort the values in descending order
-    z_sorted = tf.sort(logits_shifted, axis=axis, direction='DESCENDING')
+    # Get the last dimension size (vocabulary size)
+    vocab_size = original_shape[axis]
     
-    # Get the cumulative sum
-    z_cumsum = tf.cumsum(z_sorted, axis=axis)
+    # Reshape to 2D for efficient processing
+    if axis != -1 and axis != len(logits.shape) - 1:
+        # If not last dimension, transpose to make it last
+        perm = list(range(len(logits.shape)))
+        perm[axis], perm[-1] = perm[-1], perm[axis]
+        logits = tf.transpose(logits, perm=perm)
     
-    # Get the number of elements in the last dimension
-    dim = tf.shape(logits)[axis]
-    dim_float = tf.cast(dim, tf.float32)
+    # Flatten to 2D: [batch_size, vocab_size]
+    # Where batch_size may include other dimensions
+    flattened_shape = [-1, original_shape[-1]]
+    logits_2d = tf.reshape(logits, flattened_shape)
     
-    # Create a range tensor for the k values: [1, 2, 3, ..., dim]
-    k_tensor = tf.range(1, dim_float + 1, dtype=tf.float32)
+    # Subtract max for numerical stability (like softmax)
+    logits_2d = logits_2d - tf.reduce_max(logits_2d, axis=-1, keepdims=True)
     
-    # We need to reshape k_tensor to enable proper broadcasting
-    # For axis=-1, k_tensor should have shape [1, 1, ..., dim]
-    # Create a shape tensor filled with ones, then set the last dimension to dim
-    k_shape = tf.ones_like(tf.shape(logits), dtype=tf.int32)
-    k_shape = tf.tensor_scatter_nd_update(k_shape, [[tf.rank(logits) - 1]], [dim])
-    k = tf.reshape(k_tensor, k_shape)
+    # Sort in descending order
+    sorted_logits = tf.sort(logits_2d, axis=-1, direction='DESCENDING')
     
-    # Calculate the threshold condition: 1 + k * z > cumsum
-    threshold = 1.0 + k * z_sorted > z_cumsum
+    # Compute cumulative sum
+    cumsum = tf.cumsum(sorted_logits, axis=-1)
     
-    # Sum over the last dimension to count how many elements satisfy the condition
-    # This is the number of non-zero elements in the output
-    k_z = tf.reduce_sum(tf.cast(threshold, tf.int32), axis=axis, keepdims=True)
+    # Range tensor [1, 2, ..., vocab_size]
+    k_tensor = tf.range(1, vocab_size + 1, dtype=tf.float32)
+    k_tensor = tf.expand_dims(k_tensor, axis=0)  # Shape [1, vocab_size]
     
-    # Handle edge case: if k_z is 0, set it to 1 to avoid division by zero
-    k_z = tf.maximum(k_z, 1)
-    k_z_float = tf.cast(k_z, tf.float32)
+    # Compute threshold indices
+    thresholds = 1.0 + k_tensor * sorted_logits
+    valid_indices = tf.cast(thresholds > cumsum, tf.float32)
     
-    # Get the critical value from the sorted cumulative sum
-    # This is a simpler approach that avoids complex gathering operations
+    # Find the number of valid indices (k)
+    k = tf.reduce_sum(valid_indices, axis=-1)
+    # Ensure k is at least 1
+    k = tf.maximum(k, 1.0)
     
-    # Create a sequence mask for selecting elements
-    # The mask will have 1s for positions < k_z and 0s elsewhere
-    mask = tf.sequence_mask(
-        tf.reshape(k_z, [-1]), 
-        maxlen=dim, 
-        dtype=tf.float32
+    # Compute threshold value tau
+    # Get the position right before the threshold
+    k_indices = tf.cast(k, tf.int32) - 1
+    batch_indices = tf.range(tf.shape(logits_2d)[0])
+    gather_indices = tf.stack([batch_indices, k_indices], axis=1)
+    
+    # Get the corresponding cumulative sum values
+    cumsum_threshold = tf.gather_nd(cumsum, gather_indices)
+    
+    # Compute tau
+    tau = (cumsum_threshold - 1.0) / k
+    tau = tf.expand_dims(tau, axis=-1)  # Make it broadcastable
+    
+    # Apply the threshold
+    sparse_output = tf.maximum(0.0, logits_2d - tau)
+    
+    # Normalize to ensure sum = 1
+    sum_output = tf.reduce_sum(sparse_output, axis=-1, keepdims=True)
+    # Avoid division by zero
+    sum_output = tf.maximum(sum_output, epsilon)
+    sparse_output = sparse_output / sum_output
+    
+    # Handle potential NaN/Inf values - fallback to softmax
+    softmax_fallback = tf.nn.softmax(logits_2d)
+    sparse_output = tf.where(
+        tf.math.is_finite(sparse_output),
+        sparse_output,
+        softmax_fallback
     )
     
-    # Reshape mask to match z_sorted
-    mask_shape = tf.concat([
-        tf.shape(z_sorted)[:-1],
-        [dim]
-    ], axis=0)
-    mask = tf.reshape(mask, mask_shape)
+    # Reshape back to original shape
+    result = tf.reshape(sparse_output, original_shape)
     
-    # Use the mask to select elements
-    # Get the last selected element's value using a reversed cumulative sum trick
-    # First, reverse the mask and find the first 1 position
-    rev_mask = tf.reverse(mask, axis=[axis])
-    rev_sorted = tf.reverse(z_sorted, axis=[axis])
-    # Multiply the reversed mask with the reversed sorted values
-    last_selected = tf.reduce_sum(rev_mask * rev_sorted, axis=axis, keepdims=True)
+    # If we transposed earlier, transpose back
+    if axis != -1 and axis != len(logits.shape) - 1:
+        perm = list(range(len(logits.shape)))
+        perm[axis], perm[-1] = perm[-1], perm[axis]
+        result = tf.transpose(result, perm=perm)
     
-    # Calculate the threshold value tau using a simplification of the original formula
-    tau = (z_cumsum * mask - 1.0) / k_z_float
-    tau = tf.reduce_sum(tau, axis=axis, keepdims=True)
-    
-    # Apply the threshold to the original logits
-    sparse_probs = tf.maximum(0.0, logits_shifted - tau)
-    
-    # Normalize to ensure the sum is 1
-    # This step is crucial for making sure the distribution is proper
-    normalizer = tf.reduce_sum(sparse_probs, axis=axis, keepdims=True)
-    # Add epsilon to avoid division by zero
-    normalizer = tf.maximum(normalizer, epsilon)
-    sparse_probs = sparse_probs / normalizer
-    
-    # Final safety check - replace any NaN values with uniform distribution
-    is_bad = tf.math.logical_or(
-        tf.math.is_nan(sparse_probs),
-        tf.math.is_inf(sparse_probs)
-    )
-    uniform_probs = tf.ones_like(sparse_probs) / dim_float
-    return tf.where(is_bad, uniform_probs, sparse_probs)
+    return result
 
 
-class SparseMaxLoss(Loss):
-    """Simplified SparseMax loss that avoids broadcasting issues."""
+class EnhancedSparseMaxLoss(Loss):
+    """Enhanced SparseMax loss with improvements for better training stability and convergence."""
+    
+    def __init__(self, scale_factor=10.0, label_smoothing=0.1, **kwargs):
+        super(EnhancedSparseMaxLoss, self).__init__(**kwargs)
+        self.scale_factor = scale_factor
+        self.label_smoothing = label_smoothing
     
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
-        epsilon = 1e-12
+        epsilon = 1e-10
         
-        # Create padding mask
+        # Apply padding mask
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
         
-        # Apply sparsemax to get predictions
-        y_pred = sparsemax(y_pred_logits)
+        # Apply efficient sparsemax
+        y_pred = efficient_sparsemax(y_pred_logits)
         
-        # Calculate and track accuracy
+        # Track accuracy
         accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy = K.sum(accuracy * y_mask) / (K.sum(y_mask) + epsilon)
-        self.add_metric(accuracy, name='accuracy', aggregation='mean')
+        valid_count = tf.reduce_sum(y_mask) + epsilon
+        accuracy_val = tf.reduce_sum(accuracy * y_mask) / valid_count
+        self.add_metric(accuracy_val, name='accuracy', aggregation='mean')
         
-        # Use the simpler form of sparsemax loss
-        # Convert true labels to one-hot encoding
+        # Enhanced loss computation
         vocab_size = tf.shape(y_pred_logits)[-1]
+        vocab_size_float = tf.cast(vocab_size, tf.float32)
+        
+        # Convert to one-hot with label smoothing
         y_true_int = tf.cast(y_true, tf.int32)
         y_true_oh = tf.one_hot(y_true_int, vocab_size, dtype=tf.float32)
         
-        # Calculate the first term: negative dot product of true labels and logits
-        term1 = -tf.reduce_sum(y_true_oh * y_pred_logits, axis=-1)
+        # Apply label smoothing
+        if self.label_smoothing > 0:
+            y_true_smooth = (1.0 - self.label_smoothing) * y_true_oh + self.label_smoothing / vocab_size_float
+        else:
+            y_true_smooth = y_true_oh
         
-        # Calculate the second term: squared norm of predictions
-        term2 = 0.5 * tf.reduce_sum(tf.square(y_pred), axis=-1)
+        # Calculate loss components
+        # Log-likelihood term: -<y_true, logits>
+        log_term = -tf.reduce_sum(y_true_smooth * y_pred_logits, axis=-1)
+        
+        # Sparsemax term: 0.5 * ||y_pred||^2
+        sparsemax_term = 0.5 * tf.reduce_sum(tf.square(y_pred), axis=-1)
         
         # Constant term
-        term3 = 0.5
+        constant_term = 0.5
         
-        # Combine terms
-        point_loss = term1 + term2 + term3
+        # Full loss
+        point_loss = log_term + sparsemax_term + constant_term
         
-        # Apply padding mask
+        # Apply mask
         masked_loss = point_loss * y_mask
         
-        # Clip to avoid extreme values
-        clipped_loss = tf.clip_by_value(masked_loss, -1e3, 1e3)
+        # Scale the loss to improve gradient flow
+        scaled_loss = masked_loss * self.scale_factor
         
-        # Handle NaN values
+        # Calculate mean loss
+        mean_loss = tf.reduce_sum(scaled_loss) / valid_count
+        
+        # Safety check for NaN/Inf
         safe_loss = tf.where(
-            tf.math.is_finite(clipped_loss),
-            clipped_loss,
-            tf.zeros_like(clipped_loss)
-        )
-        
-        # Calculate mean loss with safe division
-        mean_loss = tf.reduce_sum(safe_loss) / (tf.reduce_sum(y_mask) + epsilon)
-        
-        # Final safety check
-        return tf.where(
             tf.math.is_finite(mean_loss),
             mean_loss,
-            tf.constant(0.1, dtype=tf.float32)
+            tf.constant(1.0, dtype=tf.float32)
         )
+        
+        return safe_loss
+
+
+class WarmupLearningRateScheduler(keras.callbacks.Callback):
+    """Learning rate scheduler with warmup and cosine decay."""
+    
+    def __init__(self, warmup_steps=2000, initial_lr=2e-5, min_lr=1e-7, total_steps=100000):
+        super(WarmupLearningRateScheduler, self).__init__()
+        self.warmup_steps = warmup_steps
+        self.initial_lr = initial_lr
+        self.min_lr = min_lr
+        self.total_steps = total_steps
+        self.step_counter = 0
+    
+    def on_batch_begin(self, batch, logs=None):
+        self.step_counter += 1
+        
+        if self.step_counter < self.warmup_steps:
+            # Linear warmup
+            lr = self.min_lr + (self.initial_lr - self.min_lr) * (self.step_counter / self.warmup_steps)
+        else:
+            # Cosine decay after warmup
+            decay_steps = self.total_steps - self.warmup_steps
+            decay_step = min(self.step_counter - self.warmup_steps, decay_steps)
+            cosine_decay = 0.5 * (1 + tf.cos(np.pi * decay_step / decay_steps))
+            lr = self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
+        
+        K.set_value(self.model.optimizer.lr, lr)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Print current learning rate
+        lr = K.get_value(self.model.optimizer.lr)
+        print(f"\nCurrent learning rate: {lr:.2e}")
 
 
 with strategy.scope():
@@ -280,27 +322,36 @@ with strategy.scope():
     model = bert.model
 
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
-    # Use the simplified SparseMaxLoss
-    outputs = SparseMaxLoss(1)([y_in, model.output])
+    
+    # Use enhanced SparseMaxLoss with scaling and label smoothing
+    outputs = EnhancedSparseMaxLoss(
+        scale_factor=10.0,
+        label_smoothing=0.1,
+        output_axis=1
+    )([y_in, model.output])
+    
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
     AdamW = extend_with_weight_decay(Adam, name='AdamW')
     AdamWLR = extend_with_piecewise_linear_lr(AdamW, name='AdamWLR')
     AdamWLRG = extend_with_gradient_accumulation(AdamWLR, name='AdamWLRG')
     
-    # Configure optimizer with additional stability settings
+    # Configure optimizer with better parameters
     optimizer = AdamWLRG(
-        learning_rate=1e-6,  # Reduced learning rate for stability
+        learning_rate=2e-5,  # Higher learning rate
         weight_decay_rate=0.01,
         exclude_from_weight_decay=['Norm', 'bias'],
         grad_accum_steps=4,
         lr_schedule={40000: 1},
-        clipnorm=1.0,  # Add gradient clipping
-        clipvalue=10.0,  # Clip gradient values
-        epsilon=1e-8  # Increase epsilon for better numerical stability
+        clipnorm=3.0,  # Increased clipnorm
+        clipvalue=30.0,  # Increased clipvalue
+        epsilon=1e-8
     )
     
-    # Compile with experimental_run_tf_function=False for complex custom losses
+    # Compile with mixed precision for faster training
+    mixed_precision = tf.keras.mixed_precision.experimental.Policy('mixed_float16')
+    tf.keras.mixed_precision.experimental.set_policy(mixed_precision)
+    
     train_model.compile(
         optimizer=optimizer,
         experimental_run_tf_function=False
@@ -309,33 +360,45 @@ with strategy.scope():
     train_model.summary()
     bert.load_weights_from_checkpoint(checkpoint_path)
 
+
 class Evaluator(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         model.save_weights('bert_model.weights')
-        # Print current status
-        print(f"\nEpoch {epoch+1} completed: loss={logs.get('loss'):.4f}, accuracy={logs.get('accuracy'):.4f}")
+        # Print detailed status
+        print(f"\nEpoch {epoch+1} completed:")
+        print(f" - Loss: {logs.get('loss'):.6f}")
+        print(f" - Accuracy: {logs.get('accuracy'):.6f}")
+
 
 if __name__ == '__main__':
     print("GPUs available:", tf.config.list_physical_devices('GPU'))
     evaluator = Evaluator()
     
-    # Add monitoring callbacks
-    early_stopping = keras.callbacks.EarlyStopping(
-        monitor='loss',
-        patience=5,
-        min_delta=0.001,
-        restore_best_weights=True,
-        verbose=1
-    )
-    
+    # Add specialized callbacks
     terminate_on_nan = keras.callbacks.TerminateOnNaN()
     
     reduce_lr = keras.callbacks.ReduceLROnPlateau(
         monitor='loss',
         factor=0.5,
-        patience=2,
+        patience=3,
         min_lr=1e-7,
         verbose=1
+    )
+    
+    # Add warmup scheduler
+    warmup_scheduler = WarmupLearningRateScheduler(
+        warmup_steps=2000,
+        initial_lr=2e-5,
+        min_lr=1e-7,
+        total_steps=100000
+    )
+    
+    # Add TensorBoard callback for better visualization
+    tensorboard = keras.callbacks.TensorBoard(
+        log_dir='./logs',
+        histogram_freq=1,
+        write_graph=True,
+        update_freq=100
     )
     
     # Prepare data generator
@@ -347,16 +410,17 @@ if __name__ == '__main__':
         padded_batch=True
     )
 
-    # Train with all callbacks enabled
+    # Train with improved configuration
     history = train_model.fit(
         dataset, 
         steps_per_epoch=1000, 
         epochs=epochs, 
         callbacks=[
             evaluator,
-            early_stopping,
             terminate_on_nan,
-            reduce_lr
+            reduce_lr,
+            warmup_scheduler,
+            tensorboard
         ],
         verbose=1
     )
