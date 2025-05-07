@@ -117,84 +117,134 @@ class CrossEntropy(Loss):
 
 
 def sparsemax(logits, axis=-1):
-    # 1) Stabilize
-    logits -= tf.reduce_max(logits, axis=axis, keepdims=True)
-
-    # 2) Sort
-    z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
-
-    # 3) Cumsum & range
-    z_cumsum = tf.cumsum(z_sorted, axis=axis)
-    dim = tf.shape(logits)[axis]
-    dim_float = tf.cast(dim, logits.dtype)
+    """Improved sparsemax implementation that handles distributed training better.
     
-    # Build k = [1,2,…,dim] with shape [1,…,1, dim, 1,…,1]
-    rank = logits.shape.rank or tf.rank(logits)
-    # Create a shape of all ones, but size ‘dim’ at the projection axis:
-    k_shape = [1] * rank
-    k_shape[axis] = dim
-    # Now build and reshape:
-    k = tf.reshape(tf.range(1, dim_float + 1, dtype=logits.dtype), k_shape)
+    This implementation correctly handles tensor shapes during distributed training.
+    """
+    # 1) Stabilize the input
+    logits = tf.cast(logits, tf.float32)
+    logits_stabilized = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
 
-    # 4) Threshold condition
-    z_check = 1 + k * z_sorted > z_cumsum
-    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
+    # 2) Sort values
+    z_sorted = tf.sort(logits_stabilized, axis=axis, direction='DESCENDING')
 
-    # 5) Compute tau
-    # (Use same flat-index pattern you already have—now k_z has correct shape)
-    batch_size = tf.shape(k_z)[0]
-    k_z_flat = tf.reshape(k_z - 1, [batch_size])    # shape [batch]
-    batch_idx = tf.range(batch_size, dtype=tf.int32) # shape [batch]
-    indices = tf.stack([batch_idx, k_z_flat], axis=1)
-
-    tau_sum = tf.gather_nd(
-        tf.reshape(z_cumsum, [batch_size, dim]),     # reshape z_cumsum to 2D: [batch, dim]
-        indices                                      # gathering along the class dim
-    )
-    tau = tf.reshape((tau_sum - 1) / tf.cast(k_z_flat + 1, logits.dtype),
-                     [batch_size, 1] + [1] * (rank - 2))
-
+    # 3) Cumulative sum with careful dimension handling
+    z_cumsum = tf.cumsum(z_sorted, axis=axis)
+    
+    # Get dimension sizes statically where possible
+    input_shape = tf.shape(logits)
+    batch_size = input_shape[0]
+    seq_len = input_shape[1]
+    vocab_size = input_shape[2]  # This should be the size along the axis=-1
+    
+    # Create k values [1, 2, 3, ..., vocab_size]
+    k = tf.range(1, vocab_size + 1, dtype=tf.float32)
+    # Make sure k has proper shape for broadcasting
+    k = tf.reshape(k, [1, 1, vocab_size])  # [1, 1, vocab_size] for broadcasting
+    
+    # 4) Threshold condition (avoid broadcasting issues)
+    z_check = 1.0 + k * z_sorted > z_cumsum
+    
+    # Calculate k_z (number of non-zero elements) in a way that preserves batch dimensions
+    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)  # [batch, seq_len, 1]
+    
+    # 5) Compute threshold tau
+    # Critical: Make sure to properly handle the shapes here to avoid the reshape error
+    # Prepare for gather operation
+    # Create indices for each element in the batch
+    batch_indices = tf.range(batch_size)  # [batch_size]
+    seq_indices = tf.range(seq_len)  # [seq_len]
+    
+    # Create a mesh grid of indices
+    mesh_batch, mesh_seq = tf.meshgrid(batch_indices, seq_indices, indexing='ij')  # [batch_size, seq_len]
+    
+    # Flatten mesh grid and k_z
+    flat_batch_indices = tf.reshape(mesh_batch, [-1])  # [batch_size * seq_len]
+    flat_seq_indices = tf.reshape(mesh_seq, [-1])  # [batch_size * seq_len]
+    flat_k_z = tf.reshape(k_z - 1, [-1])  # [batch_size * seq_len]
+    
+    # Stack indices for gather_nd
+    indices = tf.stack([flat_batch_indices, flat_seq_indices, flat_k_z], axis=1)  # [batch_size * seq_len, 3]
+    
+    # Gather the cumulative sum values at the threshold
+    # Reshape z_cumsum to match the indices
+    z_cumsum_3d = tf.reshape(z_cumsum, [batch_size, seq_len, vocab_size])
+    tau_sum = tf.gather_nd(z_cumsum_3d, indices)  # [batch_size * seq_len]
+    
+    # Reshape to match original batch and sequence dimensions
+    tau_sum = tf.reshape(tau_sum, [batch_size, seq_len])  # [batch_size, seq_len]
+    
+    # Get the corresponding k_z values for division
+    k_z_2d = tf.reshape(k_z, [batch_size, seq_len])  # [batch_size, seq_len]
+    
+    # Calculate the threshold
+    tau = (tau_sum - 1.0) / tf.cast(k_z_2d, tf.float32)  # [batch_size, seq_len]
+    
+    # Reshape tau for broadcasting against logits
+    tau = tf.reshape(tau, [batch_size, seq_len, 1])  # [batch_size, seq_len, 1]
+    
     # 6) Final projection
-    return tf.maximum(0., logits - tau)
-
+    return tf.maximum(0.0, logits_stabilized - tau)
 
 class SparseMaxLoss(Loss):
+    """Loss function for Sparsemax activation with proper shape handling for distributed training."""
+    
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
+        
+        # Handle padding mask
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-
+        
         # Apply sparsemax to logits
         y_pred = sparsemax(y_pred_logits)
-
-        # Flatten predictions and labels
-        y_true_flat = K.flatten(y_true)
-        y_pred_logits_flat = K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]])
-        y_pred_flat = K.reshape(y_pred, [-1, K.shape(y_pred_logits)[-1]])
-        y_mask_flat = K.flatten(y_mask)
-
-        # Build index for true class logits
-        batch_range = K.arange(0, K.shape(y_true_flat)[0])
-        indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
-
-        # Gather true class logits
-        z_y = tf.gather_nd(y_pred_logits_flat, indices)
-
-        # Compute squared norm
-        squared_norm = K.sum(K.square(y_pred_flat), axis=-1)
-
-        # Compute loss
-        loss = -z_y + 0.5 * squared_norm + 0.5
-
-        # Apply mask and compute mean loss
-        loss = loss * y_mask_flat
-        loss = K.sum(loss) / (K.sum(y_mask_flat) + K.epsilon())
-
-        # Compute accuracy (optional)
+        
+        # Compute and track accuracy
         accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
         accuracy = K.sum(accuracy * y_mask) / (K.sum(y_mask) + K.epsilon())
         self.add_metric(accuracy, name='accuracy', aggregation='mean')
-
-        return loss
+        
+        # Get shape information
+        batch_size = tf.shape(y_true)[0]
+        seq_len = tf.shape(y_true)[1]
+        vocab_size = tf.shape(y_pred_logits)[2]
+        
+        # Reshape tensors carefully
+        y_true_flat = tf.reshape(y_true, [-1])  # [batch_size * seq_len]
+        y_mask_flat = tf.reshape(y_mask, [-1])  # [batch_size * seq_len]
+        
+        # Identify valid positions (non-padding)
+        valid_positions = tf.cast(y_mask_flat, tf.bool)
+        
+        # Filter out padded positions
+        valid_y_true = tf.boolean_mask(y_true_flat, valid_positions)
+        valid_y_true = tf.cast(valid_y_true, tf.int32)
+        
+        # Find the position indices in the flattened tensor
+        position_indices = tf.range(batch_size * seq_len)
+        valid_positions_indices = tf.boolean_mask(position_indices, valid_positions)
+        
+        # Calculate batch and position indices from flattened indices
+        valid_batch_indices = valid_positions_indices // seq_len
+        valid_seq_indices = valid_positions_indices % seq_len
+        
+        # Stack indices for gather
+        gather_indices = tf.stack(
+            [valid_batch_indices, valid_seq_indices, valid_y_true], 
+            axis=1
+        )  # [num_valid, 3]
+        
+        # Get logits for true classes
+        z_y = tf.gather_nd(y_pred_logits, gather_indices)  # [num_valid]
+        
+        # Calculate squared norm term for valid positions
+        valid_preds = tf.gather_nd(y_pred, tf.stack([valid_batch_indices, valid_seq_indices], axis=1))
+        squared_norm = tf.reduce_sum(tf.square(valid_preds), axis=1)  # [num_valid]
+        
+        # Compute the loss
+        point_loss = -z_y + 0.5 * squared_norm + 0.5
+        
+        # Return mean loss
+        return tf.reduce_mean(point_loss)
 
 with strategy.scope():
     bert = build_transformer_model(
