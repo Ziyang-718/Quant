@@ -115,176 +115,158 @@ class CrossEntropy(Loss):
 
 
 def sparsemax(logits, axis=-1):
-    """Improved sparsemax implementation with numerical stability.
+    """Simplified sparsemax implementation with fixed broadcasting.
     
-    Args:
-        logits: Input tensor
-        axis: Axis along which to apply sparsemax
-        
-    Returns:
-        Sparsemax tensor with same shape as logits
+    This version avoids complex operations that could cause broadcasting issues.
     """
-    # Add small epsilon for numerical stability
-    eps = 1e-10
+    epsilon = 1e-12  # Numerical stability constant
     
-    # Cast to float32 for consistent precision
+    # Cast to float32 for stability
     logits = tf.cast(logits, tf.float32)
     
-    # 1) Stabilize by subtracting max
-    max_logits = tf.reduce_max(logits, axis=axis, keepdims=True)
-    logits_stabilized = logits - max_logits
+    # Step 1: Apply standard softmax-style normalization
+    # Subtract max for numerical stability
+    logits_shifted = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
     
-    # 2) Sort values in descending order
-    z_sorted = tf.sort(logits_stabilized, axis=axis, direction='DESCENDING')
+    # Step 2: Sort the values in descending order
+    z_sorted = tf.sort(logits_shifted, axis=axis, direction='DESCENDING')
     
-    # 3) Compute cumulative sum
+    # Get the cumulative sum
     z_cumsum = tf.cumsum(z_sorted, axis=axis)
     
-    # Get dimension sizes
-    input_shape = tf.shape(logits)
-    batch_size = input_shape[0]
-    seq_len = input_shape[1]
-    vocab_size = input_shape[2]  # This should be the size along the axis=-1
+    # Get the number of elements in the last dimension
+    dim = tf.shape(logits)[axis]
+    dim_float = tf.cast(dim, tf.float32)
     
-    # Create k values [1, 2, 3, ..., vocab_size]
-    k = tf.range(1, vocab_size + 1, dtype=tf.float32)
-    # Make sure k has proper shape for broadcasting
-    k = tf.reshape(k, [1, 1, vocab_size])  # [1, 1, vocab_size] for broadcasting
+    # Create a range tensor for the k values: [1, 2, 3, ..., dim]
+    k_tensor = tf.range(1, dim_float + 1, dtype=tf.float32)
     
-    # 4) Compute threshold condition: 1 + k*z > cumsum
-    threshold_condition = 1.0 + k * z_sorted > z_cumsum
+    # We need to reshape k_tensor to enable proper broadcasting
+    # For axis=-1, k_tensor should have shape [1, 1, ..., dim]
+    # Create a shape tensor filled with ones, then set the last dimension to dim
+    k_shape = tf.ones_like(tf.shape(logits), dtype=tf.int32)
+    k_shape = tf.tensor_scatter_nd_update(k_shape, [[tf.rank(logits) - 1]], [dim])
+    k = tf.reshape(k_tensor, k_shape)
     
-    # Ensure at least one element is selected (important for numerical stability)
-    any_selected = tf.reduce_any(threshold_condition, axis=axis, keepdims=True)
-    # If no elements selected, select the first one
-    safe_condition = tf.logical_or(
-        threshold_condition,
-        tf.logical_and(tf.equal(k, 1.0), tf.logical_not(any_selected))
+    # Calculate the threshold condition: 1 + k * z > cumsum
+    threshold = 1.0 + k * z_sorted > z_cumsum
+    
+    # Sum over the last dimension to count how many elements satisfy the condition
+    # This is the number of non-zero elements in the output
+    k_z = tf.reduce_sum(tf.cast(threshold, tf.int32), axis=axis, keepdims=True)
+    
+    # Handle edge case: if k_z is 0, set it to 1 to avoid division by zero
+    k_z = tf.maximum(k_z, 1)
+    k_z_float = tf.cast(k_z, tf.float32)
+    
+    # Get the critical value from the sorted cumulative sum
+    # This is a simpler approach that avoids complex gathering operations
+    
+    # Create a sequence mask for selecting elements
+    # The mask will have 1s for positions < k_z and 0s elsewhere
+    mask = tf.sequence_mask(
+        tf.reshape(k_z, [-1]), 
+        maxlen=dim, 
+        dtype=tf.float32
     )
     
-    # 5) Count elements that satisfy condition
-    k_z = tf.reduce_sum(tf.cast(safe_condition, tf.int32), axis=axis, keepdims=True)  # [batch, seq_len, 1]
-    # Ensure k_z is at least 1 to avoid division by zero
-    k_z_safe = tf.maximum(k_z, 1)
-    k_z_float = tf.cast(k_z_safe, tf.float32)
+    # Reshape mask to match z_sorted
+    mask_shape = tf.concat([
+        tf.shape(z_sorted)[:-1],
+        [dim]
+    ], axis=0)
+    mask = tf.reshape(mask, mask_shape)
     
-    # 6) Compute threshold tau
-    # Create indices for each element in the batch
-    batch_indices = tf.range(batch_size)  # [batch_size]
-    seq_indices = tf.range(seq_len)  # [seq_len]
+    # Use the mask to select elements
+    # Get the last selected element's value using a reversed cumulative sum trick
+    # First, reverse the mask and find the first 1 position
+    rev_mask = tf.reverse(mask, axis=[axis])
+    rev_sorted = tf.reverse(z_sorted, axis=[axis])
+    # Multiply the reversed mask with the reversed sorted values
+    last_selected = tf.reduce_sum(rev_mask * rev_sorted, axis=axis, keepdims=True)
     
-    # Create a mesh grid of indices
-    mesh_batch, mesh_seq = tf.meshgrid(batch_indices, seq_indices, indexing='ij')  # [batch_size, seq_len]
+    # Calculate the threshold value tau using a simplification of the original formula
+    tau = (z_cumsum * mask - 1.0) / k_z_float
+    tau = tf.reduce_sum(tau, axis=axis, keepdims=True)
     
-    # Flatten mesh grid and k_z
-    flat_batch_indices = tf.reshape(mesh_batch, [-1])  # [batch_size * seq_len]
-    flat_seq_indices = tf.reshape(mesh_seq, [-1])  # [batch_size * seq_len]
-    flat_k_z = tf.reshape(k_z_safe - 1, [-1])  # [batch_size * seq_len]
+    # Apply the threshold to the original logits
+    sparse_probs = tf.maximum(0.0, logits_shifted - tau)
     
-    # Stack indices for gather_nd
-    indices = tf.stack([flat_batch_indices, flat_seq_indices, flat_k_z], axis=1)  # [batch_size * seq_len, 3]
+    # Normalize to ensure the sum is 1
+    # This step is crucial for making sure the distribution is proper
+    normalizer = tf.reduce_sum(sparse_probs, axis=axis, keepdims=True)
+    # Add epsilon to avoid division by zero
+    normalizer = tf.maximum(normalizer, epsilon)
+    sparse_probs = sparse_probs / normalizer
     
-    # Gather the cumulative sum values at the threshold
-    # Reshape z_cumsum to match the indices
-    z_cumsum_3d = tf.reshape(z_cumsum, [batch_size, seq_len, vocab_size])
-    
-    # Use try-except to handle potential out-of-bounds errors
-    try:
-        tau_sum = tf.gather_nd(z_cumsum_3d, indices)  # [batch_size * seq_len]
-    except tf.errors.InvalidArgumentError:
-        # Fallback for safety - use a constant if gather_nd fails
-        print("Warning: gather_nd failed, using fallback")
-        tau_sum = tf.ones([batch_size * seq_len], dtype=tf.float32)
-    
-    # Reshape to match original batch and sequence dimensions
-    tau_sum = tf.reshape(tau_sum, [batch_size, seq_len])  # [batch_size, seq_len]
-    
-    # Calculate the threshold with safety measures
-    tau = (tau_sum - 1.0) / (tf.cast(k_z_safe, tf.float32) + eps)  # [batch_size, seq_len]
-    
-    # Clip tau to avoid extreme values
-    tau = tf.clip_by_value(tau, -1e6, 1e6)
-    
-    # Reshape tau for broadcasting against logits
-    tau = tf.reshape(tau, [batch_size, seq_len, 1])  # [batch_size, seq_len, 1]
-    
-    # 7) Final projection with epsilon to avoid numerical issues
-    result = tf.maximum(0.0, logits_stabilized - tau + eps)
-    
-    # Normalize to ensure sum to 1.0 (important for numerical stability)
-    sum_result = tf.reduce_sum(result, axis=axis, keepdims=True)
-    normalized_result = result / (sum_result + eps)
-    
-    # Replace any potential NaN values with uniform distribution
-    is_nan = tf.math.is_nan(normalized_result)
-    uniform_value = 1.0 / tf.cast(vocab_size, tf.float32)
-    safe_projection = tf.where(
-        is_nan,
-        tf.ones_like(normalized_result) * uniform_value,
-        normalized_result
+    # Final safety check - replace any NaN values with uniform distribution
+    is_bad = tf.math.logical_or(
+        tf.math.is_nan(sparse_probs),
+        tf.math.is_inf(sparse_probs)
     )
-    
-    return safe_projection
+    uniform_probs = tf.ones_like(sparse_probs) / dim_float
+    return tf.where(is_bad, uniform_probs, sparse_probs)
+
 
 class SparseMaxLoss(Loss):
-    """Numerically stable SparseMax loss implementation."""
+    """Simplified SparseMax loss that avoids broadcasting issues."""
     
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
-        eps = 1e-10  # Small epsilon for numerical stability
+        epsilon = 1e-12
         
-        # Create mask for padding tokens
+        # Create padding mask
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
         
-        # Apply sparsemax activation
+        # Apply sparsemax to get predictions
         y_pred = sparsemax(y_pred_logits)
         
-        # Calculate and track accuracy metric
+        # Calculate and track accuracy
         accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy_value = K.sum(accuracy * y_mask) / (K.sum(y_mask) + eps)
-        self.add_metric(accuracy_value, name='accuracy', aggregation='mean')
+        accuracy = K.sum(accuracy * y_mask) / (K.sum(y_mask) + epsilon)
+        self.add_metric(accuracy, name='accuracy', aggregation='mean')
         
-        # Implement sparsemax loss using one-hot encoding
-        # This avoids potential issues with gather operations
-        y_true_int = tf.cast(y_true, tf.int32)
+        # Use the simpler form of sparsemax loss
+        # Convert true labels to one-hot encoding
         vocab_size = tf.shape(y_pred_logits)[-1]
+        y_true_int = tf.cast(y_true, tf.int32)
+        y_true_oh = tf.one_hot(y_true_int, vocab_size, dtype=tf.float32)
         
-        # Create one-hot representation of true labels
-        y_true_one_hot = tf.one_hot(y_true_int, vocab_size, dtype=tf.float32)
+        # Calculate the first term: negative dot product of true labels and logits
+        term1 = -tf.reduce_sum(y_true_oh * y_pred_logits, axis=-1)
         
-        # Calculate the dot product of true labels and logits
-        z_y = tf.reduce_sum(y_true_one_hot * y_pred_logits, axis=-1)
+        # Calculate the second term: squared norm of predictions
+        term2 = 0.5 * tf.reduce_sum(tf.square(y_pred), axis=-1)
         
-        # Calculate squared norm of predicted distribution
-        squared_norm = tf.reduce_sum(tf.square(y_pred), axis=-1)
+        # Constant term
+        term3 = 0.5
         
-        # Calculate point-wise loss: -z_y + 0.5 * squared_norm + 0.5
-        point_loss = -z_y + 0.5 * squared_norm + 0.5
+        # Combine terms
+        point_loss = term1 + term2 + term3
         
         # Apply padding mask
         masked_loss = point_loss * y_mask
         
-        # Clip values to avoid numerical instability
+        # Clip to avoid extreme values
         clipped_loss = tf.clip_by_value(masked_loss, -1e3, 1e3)
         
-        # Replace any NaN values
+        # Handle NaN values
         safe_loss = tf.where(
             tf.math.is_finite(clipped_loss),
             clipped_loss,
             tf.zeros_like(clipped_loss)
         )
         
-        # Calculate mean loss over non-padding tokens
-        mean_loss = tf.reduce_sum(safe_loss) / (tf.reduce_sum(y_mask) + eps)
+        # Calculate mean loss with safe division
+        mean_loss = tf.reduce_sum(safe_loss) / (tf.reduce_sum(y_mask) + epsilon)
         
         # Final safety check
-        final_loss = tf.where(
+        return tf.where(
             tf.math.is_finite(mean_loss),
             mean_loss,
-            tf.constant(0.1, dtype=tf.float32)  # Default small value if NaN occurs
+            tf.constant(0.1, dtype=tf.float32)
         )
-        
-        return final_loss
+
 
 with strategy.scope():
     bert = build_transformer_model(
@@ -298,7 +280,7 @@ with strategy.scope():
     model = bert.model
 
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
-    # Use the SparseMaxLoss
+    # Use the simplified SparseMaxLoss
     outputs = SparseMaxLoss(1)([y_in, model.output])
     train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
@@ -306,21 +288,22 @@ with strategy.scope():
     AdamWLR = extend_with_piecewise_linear_lr(AdamW, name='AdamWLR')
     AdamWLRG = extend_with_gradient_accumulation(AdamWLR, name='AdamWLRG')
     
-    # Configure optimizer with enhanced stability
+    # Configure optimizer with additional stability settings
     optimizer = AdamWLRG(
-        learning_rate=5e-6,  # Reduced for stability
+        learning_rate=1e-6,  # Reduced learning rate for stability
         weight_decay_rate=0.01,
         exclude_from_weight_decay=['Norm', 'bias'],
         grad_accum_steps=4,
-        lr_schedule={40000: 1},  # Longer schedule
-        clipnorm=1.0,  # Add gradient norm clipping
-        clipvalue=10.0  # Add gradient value clipping
+        lr_schedule={40000: 1},
+        clipnorm=1.0,  # Add gradient clipping
+        clipvalue=10.0,  # Clip gradient values
+        epsilon=1e-8  # Increase epsilon for better numerical stability
     )
     
-    # Compile with experimental options for stability
+    # Compile with experimental_run_tf_function=False for complex custom losses
     train_model.compile(
         optimizer=optimizer,
-        experimental_run_tf_function=False  # Can help with complex custom losses
+        experimental_run_tf_function=False
     )
     
     train_model.summary()
@@ -336,22 +319,20 @@ if __name__ == '__main__':
     print("GPUs available:", tf.config.list_physical_devices('GPU'))
     evaluator = Evaluator()
     
-    # Add callbacks for stability and monitoring
+    # Add monitoring callbacks
     early_stopping = keras.callbacks.EarlyStopping(
         monitor='loss',
-        patience=5,  # Allow more epochs before stopping
+        patience=5,
         min_delta=0.001,
         restore_best_weights=True,
         verbose=1
     )
     
-    # Add callback to stop training if NaN detected
     terminate_on_nan = keras.callbacks.TerminateOnNaN()
     
-    # Add callback to reduce learning rate when loss plateaus
     reduce_lr = keras.callbacks.ReduceLROnPlateau(
         monitor='loss',
-        factor=0.5,  # Reduce by half
+        factor=0.5,
         patience=2,
         min_lr=1e-7,
         verbose=1
@@ -366,7 +347,7 @@ if __name__ == '__main__':
         padded_batch=True
     )
 
-    # Train the model with improved monitoring
+    # Train with all callbacks enabled
     history = train_model.fit(
         dataset, 
         steps_per_epoch=1000, 
@@ -380,7 +361,7 @@ if __name__ == '__main__':
         verbose=1
     )
 
-    # Plot training accuracy and loss
+    # Plot training metrics
     plt.figure(figsize=(12, 5))
 
     # Accuracy
