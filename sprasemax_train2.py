@@ -325,7 +325,7 @@ if __name__ == '__main__':
     print("Loss values:", history.history.get('loss', []))
     metrics_df = pd.DataFrame(history.history)
     # Save to CSV file inside your host-mounted folder
-    metrics_df.to_csv('/workspace/Quant/training_metrics.csv', index=False)
+    metrics_df.to_csv('/workspace/Quant/Sparsemax_training_metrics.csv', index=False)
 
 else:
     model.load_weights('bert_model.weights')
