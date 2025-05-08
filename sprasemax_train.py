@@ -165,36 +165,46 @@ def sparsemax(logits, axis=-1):
     return tf.maximum(0., logits - tau_z)
 
 
+import tensorflow as tf
+from bert4keras.backend import K, keras
+
 class SparseMaxLoss(Loss):
     def compute_loss(self, inputs, mask=None):
         y_true, y_pred_logits = inputs
         y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-        
+
         # Apply sparsemax to logits
         y_pred = sparsemax(y_pred_logits)
-        
-        # Compute accuracy (similar to the original implementation)
+
+        # Compute raw accuracy and use safe division
         accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
-        self.add_metric(accuracy, name='accuracy', aggregation='mean')
-        
-        # Process in smaller batches to save memory
+        numerator_acc = K.sum(accuracy * y_mask)
+        denominator = K.sum(y_mask)
+        safe_acc = tf.math.divide_no_nan(numerator_acc, denominator)
+        self.add_metric(safe_acc, name='accuracy', aggregation='mean')
+
+        # Flatten labels and build indices as before…
         y_true_flat = K.flatten(y_true)
         batch_range = K.arange(0, K.shape(y_true_flat)[0])
         indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
-        
-        # Extract logit for the true class (memory efficient)
-        z_y = tf.gather_nd(K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]), indices)
-        
-        # Compute squared norm more efficiently
+
+        # Extract logits of the true class
+        z_y = tf.gather_nd(
+            K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]),
+            indices
+        )
+
+        # Compute squared norm
         squared_norm = K.sum(K.square(y_pred), axis=-1)
-        
-        # Compute loss
-        loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
-        loss = K.reshape(loss, K.shape(y_true))
-        loss = K.sum(loss * y_mask) / K.sum(y_mask)
-        
-        return loss
+
+        # Compute raw loss and use safe division
+        raw_loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
+        masked_loss = raw_loss * y_mask
+        numerator_loss = K.sum(masked_loss)
+        safe_loss = tf.math.divide_no_nan(numerator_loss, denominator)
+
+        return safe_loss
+
 
 with strategy.scope():
     bert = build_transformer_model(
