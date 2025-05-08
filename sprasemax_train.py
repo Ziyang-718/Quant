@@ -162,7 +162,7 @@ def sparsemax(logits, axis=-1):
     tau_z    = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
 
     # 6) Final projection
-    return tf.maximum(0., logits - tau)
+   return tf.maximum(0., logits - tau_z)
 
 
 class SparseMaxLoss(Loss):
