@@ -8,7 +8,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import json
 import numpy as np
 import tensorflow as tf
-from bert4keras.backend import keras, K
+from bert4keras.backend2 import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer
