@@ -288,90 +288,99 @@ def leaky_relu(x, alpha=0.2):
 
 def sparsemax(logits, axis=-1):
     """
-    Improved sparsemax implementation with better numerical stability.
-    Fixed to handle distributed training scenarios properly.
+    TensorFlow implementation of sparsemax based on the algorithm from:
+    "From Softmax to Sparsemax: A Sparse Model of Attention and Multi-Label Classification"
+    by André F. T. Martins, Ramón Fernandez Astudillo (ICML 2016)
+    
+    This implementation follows the simplex projection approach in the paper.
     
     Args:
-        logits: A tensor of logits.
-        axis: The axis along which to apply sparsemax.
+        logits: Input tensor
+        axis: Dimension along which to apply sparsemax
         
     Returns:
-        A tensor with the same shape as logits where sparsemax has been applied.
+        sparsemax activations of same shape as logits
     """
-    # Convert input to tensor
-    logits = tf.convert_to_tensor(logits)
+    # For numerical stability
+    logits = tf.cast(logits, tf.float32)
     
-    # Add epsilon for numerical stability
-    epsilon = 1e-10
+    # Shift for numerical stability
+    logits = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
     
-    # Stabilize input by removing max (like in softmax)
-    z = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
+    # We need to handle different tensor ranks for the general case
+    ndim = tf.rank(logits)
+    dims = tf.shape(logits)
     
-    # Sort z in descending order along specified axis
-    z_sorted = tf.sort(z, direction="DESCENDING", axis=axis)
+    # For now, we only handle sparsemax along the last dimension
+    if axis != -1 and axis != ndim - 1:
+        # Transpose logits to move the target axis to the end
+        perm = list(range(ndim))
+        perm[axis], perm[-1] = perm[-1], perm[axis]
+        logits = tf.transpose(logits, perm=perm)
     
-    # Compute cumulative sum
-    z_cumsum = tf.cumsum(z_sorted, axis=axis)
+    # Reshape to 2D: [batch_size, dim_size]
+    target_dim = tf.shape(logits)[-1]
+    reshape_dims = [-1, target_dim]
+    logits_2d = tf.reshape(logits, reshape_dims)
     
-    # Get dimension size along the specified axis
-    dim = tf.shape(z)[axis]
+    # Sort in descending order
+    z_sorted = tf.sort(logits_2d, axis=-1, direction='DESCENDING')
     
-    # Create range tensor [1, 2, 3, ..., dim]
-    r = tf.cast(tf.range(1, dim + 1), logits.dtype)
+    # Calculate cumulative sum
+    z_cumsum = tf.cumsum(z_sorted, axis=-1)
     
-    # Reshape r for broadcasting - this is a critical step for stability
-    # Create a shape tensor filled with ones, with the specified axis set to dim
-    r_shape = tf.ones([tf.rank(z)], dtype=tf.int32)
-    r_shape = tf.tensor_scatter_nd_update(r_shape, [[axis]], [dim])
-    r = tf.reshape(r, r_shape)
+    # Get the number of elements in the dimension
+    dim_size = tf.shape(logits_2d)[-1]
     
-    # Compute threshold condition: 1 + k*z > cumsum
-    condition = 1.0 + r * z_sorted > z_cumsum
+    # Range tensor: [1, 2, ..., dim_size]
+    range_tensor = tf.range(1, dim_size + 1, dtype=tf.float32)
+    range_tensor = tf.expand_dims(range_tensor, 0)  # Shape [1, dim_size]
     
-    # Ensure at least one element passes the condition
-    # This prevents k_z from being zero, which would cause division by zero
-    any_pass = tf.reduce_any(condition, axis=axis, keepdims=True)
-    safe_condition = tf.logical_or(
-        condition,
-        tf.logical_and(
-            tf.equal(r, 1.0),  # Only select the first element
-            tf.logical_not(any_pass)
-        )
+    # Calculate the threshold for each row
+    # Formula: z_sorted_i > (cumsum_i - 1) / i
+    threshold_values = z_sorted - (z_cumsum - 1.0) / range_tensor
+    
+    # Find positions where the condition is satisfied
+    is_gt = tf.cast(threshold_values > 0, tf.float32)
+    
+    # Handle the case where all values might be negative
+    # Ensure at least one element is selected
+    has_any = tf.reduce_sum(is_gt, axis=-1, keepdims=True)
+    is_gt = tf.where(
+        has_any > 0,
+        is_gt,
+        tf.one_hot(tf.zeros(tf.shape(has_any)[0], dtype=tf.int32), dim_size)
     )
     
-    # Count elements that satisfy the condition (k_z)
-    support = tf.cast(safe_condition, logits.dtype)
-    k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
+    # Calculate rho (number of elements in support)
+    rho = tf.reduce_sum(is_gt, axis=-1, keepdims=True)
     
-    # Compute sum of selected elements
-    # This avoids complex gather operations that can fail in distributed settings
-    tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
+    # Find the cumulative sum at position rho
+    # We'll use a different approach to find the cumulative sum at rho
+    # First, multiply cumsum by the indicator and then sum
+    cumsum_rho = tf.reduce_sum(z_cumsum * is_gt, axis=-1, keepdims=True)
     
-    # Compute threshold tau
-    tau = (tau_sum - 1.0) / (k_z + epsilon)
+    # Calculate tau
+    tau = (cumsum_rho - 1.0) / rho
     
-    # Apply the threshold to get sparse outputs
-    outputs = tf.maximum(0.0, z - tau)
+    # Expand tau for broadcasting
+    tau = tf.expand_dims(tau, -1)
     
-    # Ensure outputs sum to 1 for a valid probability distribution
-    outputs_sum = tf.reduce_sum(outputs, axis=axis, keepdims=True)
-    outputs_sum = tf.maximum(outputs_sum, epsilon)  # Avoid division by zero
-    normalized_outputs = outputs / outputs_sum
+    # Calculate sparsemax: max(0, logits - tau)
+    sparsemax_2d = tf.maximum(0.0, logits_2d - tau)
     
-    # Handle potential NaN/Inf values
-    outputs_mask = tf.logical_or(
-        tf.math.is_nan(normalized_outputs),
-        tf.math.is_inf(normalized_outputs)
-    )
-    # Fallback to uniform distribution for problematic values
-    uniform_value = 1.0 / tf.cast(dim, logits.dtype)
-    final_outputs = tf.where(
-        outputs_mask,
-        tf.ones_like(normalized_outputs) * uniform_value,
-        normalized_outputs
-    )
+    # Reshape back to original shape
+    if axis != -1 and axis != ndim - 1:
+        # First reshape to shape with target dim at the end
+        target_shape = tf.concat([dims[:-1], [dims[axis]]], axis=0)
+        sparsemax_out = tf.reshape(sparsemax_2d, target_shape)
+        # Then transpose back
+        sparsemax_out = tf.transpose(sparsemax_out, perm=perm)
+    else:
+        # Just reshape to original shape
+        sparsemax_out = tf.reshape(sparsemax_2d, tf.shape(logits))
     
-    return final_outputs
+    return sparsemax_out
 
 
 def attention_normalize(a, mask=None, axis=-1, method="sparsemax", bias=None):
