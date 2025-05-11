@@ -19,6 +19,9 @@ from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator
 from bert4keras.snippets import text_segmentate
+import tensorflow_addons as tfa
+from tensorflow_addons.activations import sparsemax
+from tensorflow_addons.losses import SparsemaxLoss
 import jieba
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -104,17 +107,6 @@ class data_generator(DataGenerator):
             source, target = random_masking(token_ids)
             yield source, segment_ids, target
 
-class CrossEntropy(Loss):
-    def compute_loss(self, inputs, mask=None):
-        y_true, y_pred = inputs
-        y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        accuracy = K.sum(accuracy * y_mask) / K.sum(y_mask)
-        self.add_metric(accuracy, name='accuracy', aggregation='mean')
-        loss = K.sparse_categorical_crossentropy(y_true, y_pred, from_logits=True)
-        loss = K.sum(loss * y_mask) / K.sum(y_mask)
-        return loss
-
 
 def sparsemax(logits, axis=-1):
     # 1) Stabilize
@@ -168,63 +160,72 @@ def sparsemax(logits, axis=-1):
 import tensorflow as tf
 from bert4keras.backend import K, keras
 
-class SparseMaxLoss(Loss):
-    def compute_loss(self, inputs, mask=None):
-        y_true, y_pred_logits = inputs
-        y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
+#class SparseMaxLoss(Loss):
+  #  def compute_loss(self, inputs, mask=None):
+   #     y_true, y_pred_logits = inputs
+  #      y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
 
         # Apply sparsemax to logits
-        y_pred = sparsemax(y_pred_logits)
+   #     y_pred = sparsemax(y_pred_logits)
 
         # Compute raw accuracy and use safe division
-        accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-        numerator_acc = K.sum(accuracy * y_mask)
-        denominator = K.sum(y_mask)
-        safe_acc = tf.math.divide_no_nan(numerator_acc, denominator)
-        self.add_metric(safe_acc, name='accuracy', aggregation='mean')
+   #     accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
+   #     numerator_acc = K.sum(accuracy * y_mask)
+  #      denominator = K.sum(y_mask)
+    #    safe_acc = tf.math.divide_no_nan(numerator_acc, denominator)
+    #    self.add_metric(safe_acc, name='accuracy', aggregation='mean')
 
         # Flatten labels and build indices as before…
-        y_true_flat = K.flatten(y_true)
-        batch_range = K.arange(0, K.shape(y_true_flat)[0])
-        indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
+   #     y_true_flat = K.flatten(y_true)
+   #     batch_range = K.arange(0, K.shape(y_true_flat)[0])
+   #     indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
 
         # Extract logits of the true class
-        z_y = tf.gather_nd(
-            K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]),
-            indices
-        )
+     #   z_y = tf.gather_nd(
+     #       K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]),
+     #       indices
+     #   )
 
         # Compute squared norm
-        squared_norm = K.sum(K.square(y_pred), axis=-1)
+     #   squared_norm = K.sum(K.square(y_pred), axis=-1)
 
         # Compute raw loss and use safe division
-        raw_loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
-        masked_loss = raw_loss * y_mask
-        numerator_loss = K.sum(masked_loss)
-        safe_loss = tf.math.divide_no_nan(numerator_loss, denominator)
+    #    raw_loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
+   #     masked_loss = raw_loss * y_mask
+    #    numerator_loss = K.sum(masked_loss)
+    #    safe_loss = tf.math.divide_no_nan(numerator_loss, denominator)
 
-        return safe_loss
-
+     #   return safe_loss
 
 with strategy.scope():
+    # 1) Build RoFormer without MLM head activation
     bert = build_transformer_model(
         config_path,
         checkpoint_path=None,
         model='roformer',
-        with_mlm='linear',
+        with_mlm='linear',                # outputs raw logits
         ignore_invalid_weights=True,
         return_keras_model=False
     )
     model = bert.model
 
+    # 2) Input for masked language modeling labels
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
-    # outputs = CrossEntropy(1)([y_in, model.output])
-    outputs = SparseMaxLoss(1)([y_in, model.output])
-    train_model = keras.models.Model(model.inputs + [y_in], outputs)
 
-    AdamW = extend_with_weight_decay(Adam, name='AdamW')
-    AdamWLR = extend_with_piecewise_linear_lr(AdamW, name='AdamWLR')
-    AdamWLRG = extend_with_gradient_accumulation(AdamWLR, name='AdamWLRG')
+    # 3) Raw logits from the MLM head: shape [batch, seq_len, vocab_size]
+    logits = model.output                                    
+
+    # 4) Apply sparsemax activation on logits to get probabilities
+    probs = keras.layers.Activation(sparsemax, name='sparsemax')(logits) :contentReference[oaicite:3]{index=3}
+
+    # 5) Attach the SparsemaxLoss layer (computes loss and internal metrics)
+    outputs = SparsemaxLoss(from_logits=True)([y_in, logits]) :contentReference[oaicite:4]{index=4}
+
+    # 6) Create the training model
+    train_model = keras.models.Model(inputs=model.inputs + [y_in],
+                                     outputs=outputs)
+
+    # 7) Configure optimizer (AdamW with weight decay, LR schedule, grad accumulation)
     optimizer = AdamWLRG(
         learning_rate=1e-5,
         weight_decay_rate=0.01,
@@ -232,9 +233,20 @@ with strategy.scope():
         grad_accum_steps=4,
         lr_schedule={20000: 1}
     )
-    train_model.compile(optimizer=optimizer)
+
+    # 8) Compile with optimizer and track sparse categorical accuracy
+    train_model.compile(
+        optimizer=optimizer,
+        metrics=[keras.metrics.SparseCategoricalAccuracy(name='accuracy')]
+    ) :contentReference[oaicite:5]{index=5}
+
+    # 9) Inspect model
     train_model.summary()
+
+    # 10) Load pretrained RoFormer weights
     bert.load_weights_from_checkpoint(checkpoint_path)
+
+
 
 class Evaluator(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
