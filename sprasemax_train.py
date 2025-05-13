@@ -213,17 +213,21 @@ with strategy.scope():
     y_in = keras.layers.Input(shape=(None,), name='Input-Label')
 
     # 3) Raw logits from the MLM head: shape [batch, seq_len, vocab_size]
-    logits = model.output                                    
+    logits = model.output
 
     # 4) Apply sparsemax activation on logits to get probabilities
-    probs = keras.layers.Activation(sparsemax, name='sparsemax')(logits):contentReference[oaicite:3]{index=3}
+    probs = keras.layers.Activation(
+        sparsemax, name='sparsemax'
+    )(logits)
 
-    # 5) Attach the SparsemaxLoss layer (computes loss and internal metrics)
-    outputs = SparsemaxLoss(from_logits=True)([y_in, logits]):contentReference[oaicite:4]{index=4}
+    # 5) Attach the SparsemaxLoss layer (computes loss + internal metrics)
+    outputs = SparsemaxLoss(from_logits=True)([y_in, logits])
 
     # 6) Create the training model
-    train_model = keras.models.Model(inputs=model.inputs + [y_in],
-                                     outputs=outputs)
+    train_model = keras.models.Model(
+        inputs=model.inputs + [y_in],
+        outputs=outputs
+    )
 
     # 7) Configure optimizer (AdamW with weight decay, LR schedule, grad accumulation)
     optimizer = AdamWLRG(
@@ -238,7 +242,7 @@ with strategy.scope():
     train_model.compile(
         optimizer=optimizer,
         metrics=[keras.metrics.SparseCategoricalAccuracy(name='accuracy')]
-    ) :contentReference[oaicite:5]{index=5}
+    )
 
     # 9) Inspect model
     train_model.summary()
