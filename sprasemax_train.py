@@ -216,10 +216,10 @@ with strategy.scope():
     logits = model.output                                    
 
     # 4) Apply sparsemax activation on logits to get probabilities
-    probs = keras.layers.Activation(sparsemax, name='sparsemax')(logits) :contentReference[oaicite:3]{index=3}
+    probs = keras.layers.Activation(sparsemax, name='sparsemax')(logits):contentReference[oaicite:3]{index=3}
 
     # 5) Attach the SparsemaxLoss layer (computes loss and internal metrics)
-    outputs = SparsemaxLoss(from_logits=True)([y_in, logits]) :contentReference[oaicite:4]{index=4}
+    outputs = SparsemaxLoss(from_logits=True)([y_in, logits]):contentReference[oaicite:4]{index=4}
 
     # 6) Create the training model
     train_model = keras.models.Model(inputs=model.inputs + [y_in],
