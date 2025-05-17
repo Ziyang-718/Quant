@@ -221,7 +221,7 @@ with strategy.scope():
     )(logits)
 
     # 5) Attach the SparsemaxLoss layer (computes loss + internal metrics)
-    outputs = SparsemaxLoss(from_logits=True)([y_in, logits])
+    outputs = SparsemaxLoss(from_logits=True)(y_in, logits)
 
     # 6) Create the training model
     train_model = keras.models.Model(
