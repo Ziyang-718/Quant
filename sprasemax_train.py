@@ -1,10 +1,9 @@
 #! -*- coding: utf-8 -*-
-# 词级别的中文RoFormer预训练
-# MLM任务
-
+# 词级别的中文 RoFormer 预训练 + MLM 任务 + SparsemaxLoss
 import os
-os.environ['TF_KERAS'] = '1'  # 必须使用tf.keras
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ['TF_KERAS'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 import json
 import numpy as np
 import tensorflow as tf
@@ -12,78 +11,65 @@ from bert4keras.backend import keras, K
 from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer
+from bert4keras.snippets import sequence_padding, DataGenerator, text_segmentate
 from tensorflow.keras.optimizers import Adam
-from bert4keras.optimizers import extend_with_weight_decay
-from bert4keras.optimizers import extend_with_piecewise_linear_lr
-from bert4keras.optimizers import extend_with_gradient_accumulation
-from bert4keras.snippets import sequence_padding, open
-from bert4keras.snippets import DataGenerator
-from bert4keras.snippets import text_segmentate
+from bert4keras.optimizers import extend_with_weight_decay, extend_with_piecewise_linear_lr, extend_with_gradient_accumulation
 import tensorflow_addons as tfa
-from tensorflow_addons.activations import sparsemax
-from tensorflow_addons.losses import SparsemaxLoss
 import jieba
 import matplotlib.pyplot as plt
 import pandas as pd
+from datasets import Dataset
 
 jieba.initialize()
 
-from datasets import Dataset
-os.environ["NCCL_DEBUG"] = "WARN"
-os.environ["NCCL_P2P_DISABLE"] = "1"
-os.environ["NCCL_IB_DISABLE"] = "1"
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-print("Saving to:", os.getcwd())
+# 设置 GPU growth
 gpus = tf.config.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
-# Optional: Set GPU memory growth
-physical_gpus = tf.config.list_physical_devices('GPU')
-for gpu in physical_gpus:
-    tf.config.experimental.set_memory_growth(gpu, True)
 
-
-
-# Use MultiWorker strategy
+# 分布式策略
 strategy = tf.distribute.MultiWorkerMirroredStrategy()
 
-# 基本参数
+# 超参数
 maxlen = 512
 batch_size = 64
 epochs = 100
 
-# bert配置
+# 模型文件路径
 config_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_config.json'
 checkpoint_path = 'chinese_wobert_plus_L-12_H-768_A-12/bert_model.ckpt'
 dict_path = 'chinese_wobert_plus_L-12_H-768_A-12/vocab.txt'
 
+# 语料生成器
+
 def corpus():
-    file_path = "kaggle_dataset/train/dataset.arrow"
-    ds = Dataset.from_file(file_path)
-    for l in ds:
-        for text in text_process(l['text']):
-            yield text
+    ds = Dataset.from_file('kaggle_dataset/train/dataset.arrow')
+    for item in ds:
+        for piece in text_process(item['text']):
+            yield piece
 
 def text_process(text):
-    texts = text_segmentate(text, 32, u'\n。')
-    result, length = '', 0
-    for text in texts:
-        if result and len(result) + len(text) > maxlen * 1.5:
-            yield result
-            result, length = '', 0
-        result += text
-    if result:
-        yield result
+    segments = text_segmentate(text, 32, u'。\n')
+    buf = ''
+    for seg in segments:
+        if buf and len(buf) + len(seg) > maxlen * 1.5:
+            yield buf
+            buf = ''
+        buf += seg
+    if buf:
+        yield buf
 
+# 分词器
 tokenizer = Tokenizer(
     dict_path,
     do_lower_case=True,
     pre_tokenize=lambda s: jieba.cut(s, HMM=False)
 )
 
+# 随机掩码
+
 def random_masking(token_ids):
-    rands = np.random.random(len(token_ids))
+    rands = np.random.rand(len(token_ids))
     source, target = [], []
     for r, t in zip(rands, token_ids):
         if r < 0.15 * 0.8:
@@ -93,143 +79,75 @@ def random_masking(token_ids):
             source.append(t)
             target.append(t)
         elif r < 0.15:
-            source.append(np.random.choice(tokenizer._vocab_size - 1) + 1)
+            source.append(np.random.randint(1, tokenizer._vocab_size))
             target.append(t)
         else:
             source.append(t)
             target.append(0)
     return source, target
 
-class data_generator(DataGenerator):
+# 数据生成
+class MLMDataset(DataGenerator):
     def __iter__(self, random=False):
         for is_end, text in self.sample(random):
             token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
-            source, target = random_masking(token_ids)
-            yield source, segment_ids, target
+            src, tgt = random_masking(token_ids)
+            yield np.array(src), np.array(segment_ids), np.array(tgt)
 
+# 自定义 SparsemaxLoss
+class SparsemaxLoss(Loss):
+    def __init__(self, from_logits=True, **kwargs):
+        super().__init__(**kwargs)
+        self.from_logits = from_logits
 
-def sparsemax(logits, axis=-1):
-    # 1) Stabilize
-    logits -= tf.reduce_max(logits, axis=axis, keepdims=True)
-
-    # 2) Sort
-    z_sorted = tf.sort(logits, axis=axis, direction='DESCENDING')
-
-    # 3) Cumsum & range
-    z_cumsum = tf.cumsum(z_sorted, axis=axis)
-    dim = tf.shape(logits)[axis]
-    dim_float = tf.cast(dim, logits.dtype)
-    
-    # Build k = [1,2,…,dim] with shape [1,…,1, dim, 1,…,1]
-    rank = logits.shape.rank or tf.rank(logits)
-    # Create a shape of all ones, but size ‘dim’ at the projection axis:
-    k_shape = [1] * rank
-    k_shape[axis] = dim
-    # Now build and reshape:
-    k = tf.reshape(tf.range(1, dim_float + 1, dtype=logits.dtype), k_shape)
-
-    # 4) Threshold condition
-    z_check = 1 + k * z_sorted > z_cumsum
-    k_z = tf.reduce_sum(tf.cast(z_check, tf.int32), axis=axis, keepdims=True)
-
-   # 5) Compute tau  
-    # z_cumsum: [B, L, C], k_z: [B, L, 1]
-
-    #  5a) Flatten batch×seq → N = B*L examples
-    shape      = tf.shape(z_cumsum)          # [B, L, C]
-    B, L, C    = shape[0], shape[1], shape[2]
-    z_cumsum_f = tf.reshape(z_cumsum, [-1, C])  # [N, C]
-    k_z_f      = tf.reshape(k_z - 1,     [-1])   # [N]
-    
-    #  5b) Build flat indices for gather_nd
-    N = tf.shape(k_z_f)[0]                       # N = B*L
-    batch_idx = tf.range(N, dtype=tf.int32)      # [N]
-    indices   = tf.stack([batch_idx, tf.cast(k_z_f, tf.int32)], axis=1)  # [N,2]
-    
-    #  5c) Gather the per-example cumulative sum at k (τ numerator)
-    tau_sum_f = tf.gather_nd(z_cumsum_f, indices)  # [N]
-    
-    #  5d) Reshape back to [B, L, 1] and compute τ
-    tau_sum = tf.reshape(tau_sum_f, [B, L, 1])      
-    tau_z    = (tau_sum - 1) / tf.cast(k_z, logits.dtype)
-
-    # 6) Final projection
-    return tf.maximum(0., logits - tau_z)
-
-
-import tensorflow as tf
-from bert4keras.backend import K, keras
-
-#class SparseMaxLoss(Loss):
-  #  def compute_loss(self, inputs, mask=None):
-   #     y_true, y_pred_logits = inputs
-  #      y_mask = K.cast(K.not_equal(y_true, 0), K.floatx())
-
-        # Apply sparsemax to logits
-   #     y_pred = sparsemax(y_pred_logits)
-
-        # Compute raw accuracy and use safe division
-   #     accuracy = keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-   #     numerator_acc = K.sum(accuracy * y_mask)
-  #      denominator = K.sum(y_mask)
-    #    safe_acc = tf.math.divide_no_nan(numerator_acc, denominator)
-    #    self.add_metric(safe_acc, name='accuracy', aggregation='mean')
-
-        # Flatten labels and build indices as before…
-   #     y_true_flat = K.flatten(y_true)
-   #     batch_range = K.arange(0, K.shape(y_true_flat)[0])
-   #     indices = K.stack([batch_range, K.cast(y_true_flat, 'int32')], axis=1)
-
-        # Extract logits of the true class
-     #   z_y = tf.gather_nd(
-     #       K.reshape(y_pred_logits, [-1, K.shape(y_pred_logits)[-1]]),
-     #       indices
-     #   )
-
-        # Compute squared norm
-     #   squared_norm = K.sum(K.square(y_pred), axis=-1)
-
-        # Compute raw loss and use safe division
-    #    raw_loss = -z_y + 0.5 * K.reshape(squared_norm, K.shape(y_true_flat)) + 0.5
-   #     masked_loss = raw_loss * y_mask
-    #    numerator_loss = K.sum(masked_loss)
-    #    safe_loss = tf.math.divide_no_nan(numerator_loss, denominator)
-
-     #   return safe_loss
+    def call(self, y_true, y_pred_logits):
+        # y_pred_logits: [batch, seq, vocab]
+        # y_true:   [batch, seq]
+        if self.from_logits:
+            y_pred = tfa.activations.sparsemax(y_pred_logits)
+        else:
+            y_pred = y_pred_logits
+        # 只计算非0标签位置的 loss
+        mask = K.cast(K.not_equal(y_true, 0), K.floatx())
+        # one-hot y_true
+        vocab_size = K.shape(y_pred)[-1]
+        y_true_oh = K.one_hot(K.cast(y_true, 'int32'), vocab_size)
+        # sparsemax loss: ||p||^2 / 2 - z_y + constant, here simplified
+        squared_norm = K.sum(K.square(y_pred), axis=-1)
+        z_y = K.sum(y_pred * y_true_oh, axis=-1)
+        per_token = 0.5 * squared_norm - z_y
+        loss = per_token * mask
+        return K.sum(loss) / (K.sum(mask) + 1e-6)
 
 with strategy.scope():
-    # 1) Build RoFormer without MLM head activation
+    # 构建 RoFormer 模型
     bert = build_transformer_model(
         config_path,
         checkpoint_path=None,
         model='roformer',
-        with_mlm='linear',                # outputs raw logits
-        ignore_invalid_weights=True,
-        return_keras_model=False
+        with_mlm='linear',
+        return_keras_model=False,
+        ignore_invalid_weights=True
     )
-    model = bert.model
+    base_model = bert.model  # takes [token_ids, segment_ids], outputs logits
 
-    # 2) Input for masked language modeling labels
-    y_in = keras.layers.Input(shape=(None,), name='Input-Label')
+    # 标签输入
+    y_in = keras.layers.Input(shape=(None,), dtype='int32', name='Input-Label')
 
-    # 3) Raw logits from the MLM head: shape [batch, seq_len, vocab_size]
-    logits = model.output
+    # 输出 logits
+    logits = base_model.output  # [batch, seq_len, vocab_size]
 
-    # 4) Apply sparsemax activation on logits to get probabilities
-    probs = keras.layers.Activation(
-        sparsemax, name='sparsemax'
-    )(logits)
-
-    # 5) Attach the SparsemaxLoss layer (computes loss + internal metrics)
-    outputs = SparsemaxLoss(from_logits=True)(y_in, logits)
-
-    # 6) Create the training model
+    # 定义训练模型
     train_model = keras.models.Model(
-        inputs=model.inputs + [y_in],
-        outputs=outputs
+        inputs = base_model.inputs + [y_in],
+        outputs= logits
     )
 
-    # 7) Configure optimizer (AdamW with weight decay, LR schedule, grad accumulation)
+    # 优化器：AdamW + 线性分段 LR + weight decay + grad accumulation
+    AdamW = extend_with_weight_decay(Adam)
+    PAdamW = extend_with_piecewise_linear_lr(AdamW)
+    AdamWLRG = extend_with_gradient_accumulation(PAdamW)
+
     optimizer = AdamWLRG(
         learning_rate=1e-5,
         weight_decay_rate=0.01,
@@ -238,70 +156,50 @@ with strategy.scope():
         lr_schedule={20000: 1}
     )
 
-    # 8) Compile with optimizer and track sparse categorical accuracy
+    # 编译模型
     train_model.compile(
         optimizer=optimizer,
+        loss=SparsemaxLoss(from_logits=True),
         metrics=[keras.metrics.SparseCategoricalAccuracy(name='accuracy')]
     )
 
-    # 9) Inspect model
-    train_model.summary()
-
-    # 10) Load pretrained RoFormer weights
+    # 加载预训练权重
     bert.load_weights_from_checkpoint(checkpoint_path)
 
-
-
+# Callback 保存权重
 class Evaluator(keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
-        model.save_weights('bert_model.weights')
+        train_model.save_weights('bert_model.weights')
 
 if __name__ == '__main__':
-    print("GPUs available:", tf.config.list_physical_devices('GPU'))
     evaluator = Evaluator()
-    train_generator = data_generator(corpus(), batch_size, 10**5)
-    dataset = train_generator.to_dataset(
-        types=('float32', 'float32', 'float32'),
-        shapes=([None], [None], [None]),
-        names=('Input-Token', 'Input-Segment', 'Input-Label'),
+    # 构建 Dataset
+    train_gen = MLMDataset(corpus(), batch_size)
+    dataset = train_gen.to_dataset(
+        types=('int32','int32','int32'),
+        shapes=([None],[None],[None]),
+        names=('Input-Token','Input-Segment','Input-Label'),
         padded_batch=True
     )
 
+    # 训练
     history = train_model.fit(
-        dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
+        dataset,
+        steps_per_epoch=1000,
+        epochs=epochs,
+        callbacks=[evaluator]
     )
 
-    # Plot training accuracy and loss
-    plt.figure(figsize=(12, 5))
-
-    # Accuracy
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['accuracy'], label='Training Accuracy')
-    plt.title('Training Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
-
-    # Loss
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['loss'], label='Training Loss', color='orange')
-    plt.title('Training Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    plt.tight_layout()
-    #plt.savefig('Training_Accuracy_and_Loss_Curve.png')
-    plt.savefig('/workspace/Quant/Sparsemax_Training_Accuracy_and_Loss_Curve.png')
+    # 结果可视化
+    plt.figure(figsize=(12,5))
+    plt.plot(history.history['accuracy'], label='Accuracy')
+    plt.plot(history.history['loss'], label='Loss')
+    plt.title('Training Metrics')
+    plt.xlabel('Epoch'); plt.ylabel('Value'); plt.legend()
+    plt.savefig('sparsemax_metrics.png')
     plt.show()
-    print("Saving to:", os.getcwd())
-    # Add after training
-    print("History keys:", history.history.keys())
-    print("Accuracy values:", history.history.get('accuracy', []))
-    print("Loss values:", history.history.get('loss', []))
-    metrics_df = pd.DataFrame(history.history)
-    # Save to CSV file inside your host-mounted folder
-    metrics_df.to_csv('/workspace/Quant/training_metrics.csv', index=False)
 
+    # 保存历史
+    pd.DataFrame(history.history).to_csv('training_metrics.csv', index=False)
 else:
-    model.load_weights('bert_model.weights')
+    train_model.load_weights('bert_model.weights')
