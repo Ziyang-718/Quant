@@ -11,6 +11,8 @@ from bert4keras.snippets import orthogonally_resize
 from keras.models import Model
 import json
 
+from tensorflow_addons.activations import sparsemax
+
 
 class Transformer(object):
     """模型基类
@@ -647,7 +649,7 @@ class BERT(Transformer):
                     inputs=x,
                     layer=Dense,
                     units=2,
-                    activation='softmax',
+                    activation='sparsemax',
                     kernel_initializer=self.initializer,
                     name='NSP-Proba'
                 )
@@ -683,7 +685,7 @@ class BERT(Transformer):
             x = self.apply(
                 inputs=x, layer=ScaleOffset, scale=False, name='MLM-Bias'
             )
-            mlm_activation = 'softmax' if self.with_mlm is True else self.with_mlm
+            mlm_activation = 'sparsemax' if self.with_mlm is True else self.with_mlm
             x = self.apply(
                 inputs=x,
                 layer=Activation,
@@ -1393,7 +1395,7 @@ class RoFormerV2(RoFormer):
                 rate=self.dropout_rate,
                 name='Output-MLM-Dropout'
             )
-            mlm_activation = 'softmax' if self.with_mlm is True else self.with_mlm
+            mlm_activation = 'sparsemax' if self.with_mlm is True else self.with_mlm
             x = self.apply(
                 inputs=x,
                 layer=Embedding,
@@ -1498,7 +1500,7 @@ class GPT(LM_Mask, BERT):
     """构建GPT模型
     链接：https://github.com/openai/finetune-transformer-lm
     """
-    @insert_arguments(final_activation='softmax')
+    @insert_arguments(final_activation='sparsemax')
     @delete_arguments('with_pool', 'with_mlm')
     def __init__(self, **kwargs):
         super(GPT, self).__init__(**kwargs)
@@ -2498,7 +2500,7 @@ class T5_Decoder(LM_Mask, T5_Base):
                     kernel_initializer=self.initializer,
                     name='Decoder-Output-Mapping'
                 )
-            lm_activation = 'softmax' if self.with_lm is True else self.with_lm
+            lm_activation = 'sparsemax' if self.with_lm is True else self.with_lm
             if self.version == 't5.1.0':
                 x = self.apply(
                     inputs=x,

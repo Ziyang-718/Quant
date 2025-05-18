@@ -11,6 +11,8 @@ from tensorflow.python.util import nest, tf_inspect
 from tensorflow.python.eager import tape
 from tensorflow.python.ops.custom_gradient import _graph_mode_decorator
 
+from tensorflow_addons.activations import sparsemax
+
 # 判断是tf.keras还是纯keras的标记
 is_tf_keras = strtobool(os.environ.get('TF_KERAS', '0'))
 
@@ -319,6 +321,8 @@ def attention_normalize(a, mask=None, axis=-1, method='softmax', bias=None):
     a, mask = sequence_masking(a, mask, -np.inf, axis, bias, True)
     if method == 'softmax':
         return K.softmax(a, axis=axis)
+    elif method == 'sparsemax':
+        return sparsemax(a, axis=axis)
     else:
         if mask is None:
             l = K.cast(K.shape(a)[-1], K.floatx())
