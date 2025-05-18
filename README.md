@@ -1,73 +1,51 @@
-[[中文](https://github.com/ZhuiyiTechnology/roformer/blob/main/README_zh.md)|[English](https://github.com/ZhuiyiTechnology/roformer/blob/main/README.md)]
+# RoFormerV2
 
-# Rotary Transformer
+RoFormer升级版，主要通过结构的简化来提升速度，并通过无监督预训练和有监督预训练的结合来提升效果，从而达到了速度与效果的“双赢”。
 
-Rotary Transformer is an MLM pre-trained language model with rotary position embedding (RoPE). The RoPE is a relative position encoding method with promise theoretical properties. The main idea is to multiply the context embeddings (q,k in the Transformer) by rotation matrices depending on the absolute position.  One can prove that the inner product of the context embeddings will become only depending on the relative position. EleutherAI also posted a [blog](https://blog.eleuther.ai/rotary-embeddings/) that contains an intuitive explanation and experiments about RoPE.
+<img src="https://kexue.fm/usr/uploads/2022/03/1268810640.png" width=840>
 
-To the best of our knowledge, RoPE is the only relative position embeddings that can be used in linear attentions.  For more details, please refer to our paper or the [original Blog (Chinese)](https://kexue.fm/archives/8265). EleutherAI also posted a [blog](https://blog.eleuther.ai/rotary-embeddings/) that contains an intuitive explanation and experiments of using RoPE in various models.
+## 介绍
 
-## Dependency
+- 博客：https://kexue.fm/archives/8998
 
-`bert4keras 0.10.4`
+## 环境
 
-## Implementation
+bert4keras >= 0.11.0
 
-You can implement the RoPE with a few lines of changes in the self-attention layer. Here we provide the pseudo code for instruction.
+## 下载
 
-```python
-sinusoidal_pos.shape = [1, seq_len, hidden_size] # Sinusoidal position embeddings
-qw.shape = [batch_size, seq_len, num_heads, hidden_size]  # query hiddens
-kw.shape = [batch_size, seq_len, num_heads, hidden_size]  # key hiddens
+- **Small版**：[chinese_roformer-v2-char_L-6_H-384_A-6.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-v2-char_L-6_H-384_A-6.zip)、[百度云](https://pan.baidu.com/s/1huUrC9P60Afggo8AfiUcmA)(提取码：ttn4)
+- **Base版**：[chinese_roformer-v2-char_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-v2-char_L-12_H-768_A-12.zip)、[百度云](https://pan.baidu.com/s/1qcnN4LVKVe0-mnHlkN3-6Q)(提取码：pfoh)
+- **Large版**：[chinese_roformer-v2-char_L-24_H-1024_A-16.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-v2-char_L-24_H-1024_A-16.zip)、[百度云](https://pan.baidu.com/s/1QiJWSZrGxn8vek-8myvL6w)(提取码：npfv)
 
-cos_pos = repeat_elements(sinusoidal_pos[..., None, 1::2], rep=2, axis=-1)
-sin_pos = repeat_elements(sinusoidal_pos[..., None, ::2], rep=2, axis=-1)
-qw2 = stack([-qw[..., 1::2], qw[..., ::2]], 4)
-qw2 = reshape(qw2, shape(qw))
-qw = qw * cos_pos + qw2 * sin_pos
-kw2 = K.stack([-kw[..., 1::2], kw[..., ::2]], 4)
-kw2 = K.reshape(kw2, K.shape(kw))
-kw = kw * cos_pos + kw2 * sin_pos
+## 训练
 
-# Attention
-a = tf.einsum('bjhd,bkhd->bhjk', qw, kw)
-```
+多任务训练代码参考 https://github.com/ZhuiyiTechnology/roformer-v2/tree/main/multi-task
 
-Or you can find the implementation in source code of [bert4keras](https://github.com/bojone/bert4keras).
+## 配置
 
-## Download
+- **Small版**：两张3090（24G），先用无监督MLM训练了100万步（maxlen为512），然后有监督多任务训练了75万步（maxlen从64到512不等，取决于任务），batch_size为512，优化器为LAMB；
 
-- [chinese_roformer_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer_L-12_H-768_A-12.zip)
-- [chinese_roformer_L-6_H-384_A-6.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer_L-6_H-384_A-6.zip)
-- [chinese_roformer-char_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-char_L-12_H-768_A-12.zip)
-- [chinese_roformer-char_L-6_H-384_A-6.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-char_L-6_H-384_A-6.zip)
-- [chinese_roformer-gpt-char_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-gpt-char_L-12_H-768_A-12.zip)
-- [chinese_roformer-sim-char_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-sim-char_L-12_H-768_A-12.zip)
-- [chinese_roformer-sim-char_L-6_H-384_A-6.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-sim-char_L-6_H-384_A-6.zip)
-- [chinese_roformer-sim-char-ft_L-12_H-768_A-12.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-sim-char-ft_L-12_H-768_A-12.zip)
-- [chinese_roformer-sim-char-ft_L-6_H-384_A-6.zip](https://open.zhuiyi.ai/releases/nlp/models/zhuiyi/chinese_roformer-sim-char-ft_L-6_H-384_A-6.zip)
+- **Base版**：四张3090（24G），先用无监督MLM训练了100万步（maxlen为512），然后有监督多任务训练了75万步（maxlen从64到512不等，取决于任务），batch_size为512，优化器为LAMB；
 
-## Other Implementations
+- **Large版**：两张A100（80G），先用无监督MLM训练了100万步（maxlen为512），然后有监督多任务训练了50万步（maxlen从64到512不等，取决于任务），batch_size为512，优化器为LAMB。
 
-- A pytorch implementation can be found [here](https://github.com/JunnYu/RoFormer_pytorch)
+注：无监督的训练数据为280G，有监督的训练数据约为20G（77个标注数据集，构建了92个任务进行多任务训练，涵盖文本分类、文本匹配、阅读理解、信息抽取、指代消解等常见自然语言理解任务），large版的有监督训练步数更少，是因为20G的标注数据实在不够“喂饱”large级别的模型，继续训练下去出现了过拟合现象。
 
-- [x-transformer](https://github.com/lucidrains/x-transformers), [GPT-Neo](https://github.com/EleutherAI/gpt-neo), [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) and [mesh-transformer-jax](https://github.com/kingoflolz/mesh-transformer-jax) by EleutherAI
+## 引用
 
-##  Citation
-
-Bibtex:
+Bibtex：
 
 ```tex
-
-@misc{su2021roformer,
-      title={RoFormer: Enhanced Transformer with Rotary Position Embedding}, 
-      author={Jianlin Su and Yu Lu and Shengfeng Pan and Bo Wen and Yunfeng Liu},
-      year={2021},
-      eprint={2104.09864},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}
+@techreport{roformerv2,
+  title={RoFormerV2: A Faster and Better RoFormer - ZhuiyiAI},
+  author={Jianlin Su, Shengfeng Pan, Bo Wen, Yunfeng Liu},
+  year={2022},
+  url="https://github.com/ZhuiyiTechnology/roformer-v2",
 }
-
 ```
 
+## 联系
 
-
+- 邮箱：ai@wezhuiyi.com
+- 追一科技：https://zhuiyi.ai

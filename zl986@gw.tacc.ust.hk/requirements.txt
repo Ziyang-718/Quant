@@ -1,4 +1,0 @@
-jieba
-datasets
-matplotlib
-tensorflow_addons
