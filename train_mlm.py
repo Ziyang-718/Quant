@@ -26,11 +26,10 @@ lac = LAC(mode='seg')
 # 基本参数
 maxlen = 512
 batch_size = 64
-epochs = 100000
+epochs = 100 # each epoch takes 5 min, 100 epochs = 8 hours
 
 # 模型配置
 config_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/bert_config.json'
-checkpoint_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/bert_model.ckpt'
 dict_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/vocab.txt'
 
 
@@ -177,9 +176,13 @@ if __name__ == '__main__':
         padded_batch=True
     )
 
-    train_model.fit(
+    history = train_model.fit(
         dataset, steps_per_epoch=1000, epochs=epochs, callbacks=[evaluator]
     )
+
+    # Save history
+    with open('training_history.json', 'w') as f:
+        json.dump(history.history, f)
 
 else:
 
