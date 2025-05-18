@@ -20,13 +20,20 @@ from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import DataGenerator, parallel_apply_generator
 from LAC import LAC
 
+# Set envs
+os.environ["NCCL_DEBUG"] = "WARN"
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 # 分词工具
 lac = LAC(mode='seg')
 
 # 基本参数
 maxlen = 512
 batch_size = 64
-epochs = 100000
+epochs = 5
 
 # 模型配置
 config_path = 'models/chinese_roformer-v2-char_L-6_H-384_A-6/bert_config.json'
