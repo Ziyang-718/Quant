@@ -20,6 +20,9 @@ from bert4keras.optimizers import extend_with_gradient_accumulation
 from bert4keras.snippets import DataGenerator, parallel_apply_generator
 from LAC import LAC
 
+# Set envs
+os.environ["NCCL_DEBUG"] = "WARN"
+
 # 分词工具
 lac = LAC(mode='seg')
 
